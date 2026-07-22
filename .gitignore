@@ -10,3 +10,4 @@ bitrix_schema.json
 .DS_Store
 Thumbs.db
 .vite/
+.vercel
