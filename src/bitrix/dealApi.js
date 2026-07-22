@@ -20,7 +20,7 @@ export async function getCurrentUser() {
 
 export function formatUserName(user) {
   if (!user) return 'Неизвестный';
-  const parts = [user.NAME, user.LAST_NAME].filter(Boolean);
+  const parts = [user.LAST_NAME, user.NAME].filter(Boolean);
   if (parts.length) return parts.join(' ');
   return user.EMAIL || `ID ${user.ID}`;
 }

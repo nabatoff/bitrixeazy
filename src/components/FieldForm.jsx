@@ -17,7 +17,7 @@ function parseMoney(value) {
   return { amount: str, currency: 'KZT' };
 }
 
-function serializeMoney(amount, currency) {
+function serializeMoney(amount, currency = 'KZT') {
   if (amount === '' || amount == null) return '';
   return `${amount}|${currency || 'KZT'}`;
 }
@@ -25,23 +25,25 @@ function serializeMoney(amount, currency) {
 function BoolField({ value, disabled, onChange }) {
   const checked = value === true || value === 'Y' || value === '1' || value === 1;
   return (
-    <label>
+    <label className="bool-field">
       <input
         type="checkbox"
+        className="bool-checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked ? 'Y' : 'N')}
-      />{' '}
-      Да
+      />
+      <span className="bool-text">Да</span>
     </label>
   );
 }
 
-function EnumField({ meta, value, disabled, onChange }) {
+function EnumField({ meta, value, disabled, onChange, narrow }) {
   const items = meta.items || [];
   const current = value == null ? '' : String(Array.isArray(value) ? value[0] : value);
   return (
     <select
+      className={narrow ? 'input-narrow' : undefined}
       value={current}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value || '')}
@@ -57,23 +59,16 @@ function EnumField({ meta, value, disabled, onChange }) {
 }
 
 function MoneyField({ value, disabled, onChange }) {
-  const { amount, currency } = parseMoney(value);
+  const { amount } = parseMoney(value);
   return (
-    <div className="money-row">
-      <input
-        type="number"
-        step="0.01"
-        value={amount}
-        disabled={disabled}
-        onChange={(e) => onChange(serializeMoney(e.target.value, currency))}
-      />
-      <input
-        type="text"
-        value={currency}
-        disabled={disabled}
-        onChange={(e) => onChange(serializeMoney(amount, e.target.value))}
-      />
-    </div>
+    <input
+      className="input-narrow"
+      type="number"
+      step="0.01"
+      value={amount}
+      disabled={disabled}
+      onChange={(e) => onChange(serializeMoney(e.target.value, 'KZT'))}
+    />
   );
 }
 
@@ -102,16 +97,24 @@ function FileField({ value }) {
   );
 }
 
-function SingleField({ code, mode, values, onChange, client, onClientChange, locked }) {
+function SingleField({
+  code,
+  mode,
+  values,
+  onChange,
+  client,
+  locked,
+  assignedName,
+}) {
   const meta = FIELD_META[code] || { type: 'string', title: code };
   const disabled = mode === 'view' || locked;
+  const narrow = Boolean(meta.narrow);
 
   if (code === 'CLIENT') {
-    return <ClientCard client={client} mode={locked ? 'view' : mode} onChange={onClientChange} />;
+    return <ClientCard client={client} />;
   }
 
-  // Pair opportunity+currency visually — still separate codes in config
-  if (code === 'CURRENCY_ID' && values.__skipCurrency) return null;
+  if (code === 'CURRENCY_ID') return null;
 
   const title = meta.title || code;
   const value = values[code];
@@ -122,7 +125,15 @@ function SingleField({ code, mode, values, onChange, client, onClientChange, loc
       control = <BoolField value={value} disabled={disabled} onChange={(v) => onChange(code, v)} />;
       break;
     case 'enumeration':
-      control = <EnumField meta={meta} value={value} disabled={disabled} onChange={(v) => onChange(code, v)} />;
+      control = (
+        <EnumField
+          meta={meta}
+          value={value}
+          disabled={disabled}
+          narrow={narrow}
+          onChange={(v) => onChange(code, v)}
+        />
+      );
       break;
     case 'money':
       control = <MoneyField value={value} disabled={disabled} onChange={(v) => onChange(code, v)} />;
@@ -130,6 +141,7 @@ function SingleField({ code, mode, values, onChange, client, onClientChange, loc
     case 'date':
       control = (
         <input
+          className={narrow ? 'input-narrow' : undefined}
           type="date"
           value={value ? String(value).slice(0, 10) : ''}
           disabled={disabled}
@@ -141,6 +153,7 @@ function SingleField({ code, mode, values, onChange, client, onClientChange, loc
     case 'integer':
       control = (
         <input
+          className={narrow ? 'input-narrow' : undefined}
           type="number"
           value={value ?? ''}
           disabled={disabled}
@@ -153,35 +166,41 @@ function SingleField({ code, mode, values, onChange, client, onClientChange, loc
       break;
     case 'user':
       control = (
-        <input
-          type="text"
-          value={value ?? ''}
-          disabled={disabled}
-          placeholder="ID пользователя"
-          onChange={(e) => onChange(code, e.target.value)}
-        />
-      );
-      break;
-    case 'crm_currency':
-      control = (
-        <select value={value || 'KZT'} disabled={disabled} onChange={(e) => onChange(code, e.target.value)}>
-          {['KZT', 'USD', 'EUR', 'RUB'].map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
+        <div className="user-field">
+          <div className="user-name">{assignedName || (value ? `ID ${value}` : '—')}</div>
+          {mode === 'edit' && !locked && (
+            <input
+              className="input-narrow"
+              type="text"
+              value={value ?? ''}
+              placeholder="ID"
+              onChange={(e) => onChange(code, e.target.value)}
+            />
+          )}
+        </div>
       );
       break;
     default:
-      control = (
-        <textarea
-          value={value ?? ''}
-          disabled={disabled}
-          rows={code === 'UF_CRM_1783487251339' ? 3 : 1}
-          onChange={(e) => onChange(code, e.target.value)}
-        />
-      );
+      if (narrow || code === 'UF_CRM_1750940585581' || code === 'UF_CRM_1784532842739') {
+        control = (
+          <input
+            className="input-narrow"
+            type="text"
+            value={value ?? ''}
+            disabled={disabled}
+            onChange={(e) => onChange(code, e.target.value)}
+          />
+        );
+      } else {
+        control = (
+          <textarea
+            value={value ?? ''}
+            disabled={disabled}
+            rows={code === 'UF_CRM_1783487251339' ? 3 : 2}
+            onChange={(e) => onChange(code, e.target.value)}
+          />
+        );
+      }
   }
 
   return (
@@ -192,20 +211,35 @@ function SingleField({ code, mode, values, onChange, client, onClientChange, loc
   );
 }
 
+function groupBySection(fieldDefs) {
+  const groups = [];
+  let current = null;
+  for (const f of fieldDefs) {
+    const section = f.section || 'Поля';
+    if (!current || current.title !== section) {
+      current = { title: section, fields: [] };
+      groups.push(current);
+    }
+    current.fields.push(f);
+  }
+  return groups;
+}
+
 export function FieldForm({
   fieldDefs,
   values,
   onChange,
   client,
-  onClientChange,
   locked,
   errors,
   onSave,
   saving,
+  assignedName,
 }) {
+  const groups = groupBySection(fieldDefs);
+
   return (
-    <div className="card">
-      <h2>Поля сделки</h2>
+    <div className="form-stack">
       {errors?.length > 0 && (
         <div className="errors">
           <strong>Проверьте данные</strong>
@@ -216,19 +250,26 @@ export function FieldForm({
           </ul>
         </div>
       )}
-      {fieldDefs.map((f) => (
-        <SingleField
-          key={f.code}
-          code={f.code}
-          mode={f.mode}
-          values={values}
-          onChange={onChange}
-          client={client}
-          onClientChange={onClientChange}
-          locked={locked && f.mode === 'edit'}
-        />
+
+      {groups.map((g) => (
+        <section className="card" key={g.title}>
+          <h2>{g.title}</h2>
+          {g.fields.map((f) => (
+            <SingleField
+              key={f.code}
+              code={f.code}
+              mode={f.mode}
+              values={values}
+              onChange={onChange}
+              client={client}
+              locked={locked && f.mode === 'edit'}
+              assignedName={assignedName}
+            />
+          ))}
+        </section>
       ))}
-      <div className="actions">
+
+      <div className="actions sticky-actions">
         <button type="button" className="btn btn-primary" disabled={saving || locked} onClick={onSave}>
           {saving ? 'Сохранение…' : 'Сохранить'}
         </button>

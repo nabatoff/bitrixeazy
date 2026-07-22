@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { formatUserName, getUser } from '../bitrix/dealApi.js';
+import { fitWindow } from '../bitrix/bx24.js';
 import { FieldForm } from '../components/FieldForm.jsx';
 import { TakeInWorkBanner } from '../components/TakeInWorkBanner.jsx';
 import { useTakeInWork } from '../hooks/useTakeInWork.js';
@@ -7,10 +9,35 @@ import { validateEitherOr } from '../validation/eitherOr.js';
 function pickValues(deal, fieldDefs) {
   const values = {};
   for (const f of fieldDefs) {
-    if (f.code === 'CLIENT') continue;
+    if (f.code === 'CLIENT' || f.code === 'CURRENCY_ID') continue;
     values[f.code] = deal?.[f.code] ?? '';
   }
   return values;
+}
+
+function useFitFrame(deps) {
+  useEffect(() => {
+    const root = document.querySelector('.app');
+    const run = () => {
+      try {
+        fitWindow();
+      } catch {
+        /* ignore */
+      }
+    };
+    run();
+    if (!root || typeof ResizeObserver === 'undefined') {
+      const t = setTimeout(run, 300);
+      return () => clearTimeout(t);
+    }
+    const ro = new ResizeObserver(() => run());
+    ro.observe(root);
+    const t = setTimeout(run, 100);
+    return () => {
+      ro.disconnect();
+      clearTimeout(t);
+    };
+  }, deps);
 }
 
 export function RoleScreen({
@@ -19,7 +46,6 @@ export function RoleScreen({
   deal,
   dealId,
   client,
-  setClient,
   fieldDefs,
   lockField,
   currentUserId,
@@ -29,8 +55,8 @@ export function RoleScreen({
   saving,
 }) {
   const [values, setValues] = useState(() => pickValues(deal, fieldDefs));
-  const [pendingClient, setPendingClient] = useState({});
   const [errors, setErrors] = useState([]);
+  const [assignedName, setAssignedName] = useState('');
 
   const lock = useTakeInWork({
     dealId,
@@ -41,33 +67,34 @@ export function RoleScreen({
 
   useEffect(() => {
     setValues(pickValues(deal, fieldDefs));
-    setPendingClient({});
   }, [deal, fieldDefs]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const id = values.ASSIGNED_BY_ID || deal?.ASSIGNED_BY_ID;
+    if (!id) {
+      setAssignedName('');
+      return undefined;
+    }
+    (async () => {
+      try {
+        const user = await getUser(id);
+        if (!cancelled) setAssignedName(formatUserName(user));
+      } catch {
+        if (!cancelled) setAssignedName(`ID ${id}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [values.ASSIGNED_BY_ID, deal?.ASSIGNED_BY_ID]);
+
+  useFitFrame([deal, values, errors, lock.isBlocked, lock.isMine, lock.isFree, role]);
 
   const locked = useLock ? !lock.canEdit : false;
 
   const onChange = (code, value) => {
     setValues((prev) => ({ ...prev, [code]: value }));
-  };
-
-  const onClientChange = (patch) => {
-    setPendingClient((prev) => ({ ...prev, ...patch }));
-    setClient((prev) => ({
-      ...prev,
-      ...(patch.CONTACT_ID
-        ? {
-            contactId: String(patch.CONTACT_ID),
-            fullName: patch.contactPreview?.fullName || prev?.fullName,
-            phone: patch.contactPreview?.phone ?? prev?.phone,
-          }
-        : {}),
-      ...(patch.COMPANY_ID
-        ? {
-            companyId: String(patch.COMPANY_ID),
-            companyTitle: patch.companyPreview?.companyTitle || prev?.companyTitle,
-          }
-        : {}),
-    }));
   };
 
   const editableCodes = useMemo(
@@ -83,12 +110,8 @@ export function RoleScreen({
 
     const fields = {};
     for (const code of editableCodes) {
-      if (code === 'CLIENT') continue;
+      if (code === 'CLIENT' || code === 'CURRENCY_ID') continue;
       fields[code] = values[code];
-    }
-    if (editableCodes.has('CLIENT')) {
-      if (pendingClient.CONTACT_ID) fields.CONTACT_ID = pendingClient.CONTACT_ID;
-      if (pendingClient.COMPANY_ID) fields.COMPANY_ID = pendingClient.COMPANY_ID;
     }
 
     await saveFields(fields);
@@ -115,11 +138,11 @@ export function RoleScreen({
         values={values}
         onChange={onChange}
         client={client}
-        onClientChange={onClientChange}
         locked={locked}
         errors={errors}
         onSave={onSave}
         saving={saving}
+        assignedName={assignedName}
       />
     </div>
   );
