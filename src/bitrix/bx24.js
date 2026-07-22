@@ -148,7 +148,7 @@ export async function ensureDealTabPlacement(handlerUrl) {
     );
   }
 
-  const handler = handlerUrl || `${window.location.origin}/`;
+  const handler = handlerUrl || `${window.location.origin}/api/frame`;
   const domain = resolveDomain(auth);
   const url = new URL(`https://${domain}/rest/placement.bind`);
 

@@ -2,19 +2,22 @@ import fs from 'fs';
 import path from 'path';
 
 /**
- * Bitrix iframe loads HANDLER via POST with AUTH_* in body.
- * Static hosting → 405; this function accepts GET/POST and injects auth into HTML.
+ * Entry for Bitrix iframe (GET + POST).
+ * Bitrix always POSTs AUTH_* here — static index.html cannot accept POST (405).
  */
 function readIndexHtml() {
   const candidates = [
     path.join(process.cwd(), 'dist', 'index.html'),
     path.join(process.cwd(), 'index.html'),
-    path.join(process.cwd(), 'public', 'index.html'),
   ];
   for (const p of candidates) {
-    if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+    } catch {
+      /* continue */
+    }
   }
-  return `<!DOCTYPE html><html><body><p>index.html not found in serverless bundle</p></body></html>`;
+  return `<!DOCTYPE html><html><body><p>dist/index.html missing in function bundle — redeploy</p></body></html>`;
 }
 
 function pickAuth(body) {
@@ -33,21 +36,25 @@ function pickAuth(body) {
 }
 
 export default function handler(req, res) {
+  // Allow Bitrix CORS/preflight if any
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
   let html = readIndexHtml();
   const auth = req.method === 'POST' ? pickAuth(req.body) : null;
 
   if (auth) {
     const inject = `<script>window.__BITRIX_POST_AUTH__=${JSON.stringify(auth)};</script>`;
-    if (html.includes('<head>')) {
-      html = html.replace('<head>', `<head>${inject}`);
-    } else {
-      html = inject + html;
-    }
+    html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
   }
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Allow', 'GET, POST, OPTIONS');
   res.setHeader(
     'Content-Security-Policy',
     "frame-ancestors https://crm.artflowers.kz https://*.bitrix24.ru https://*.bitrix24.com https://*.bitrix24.kz 'self'"

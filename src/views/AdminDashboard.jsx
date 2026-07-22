@@ -93,8 +93,8 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
     setBinding(true);
     setMessage('');
     try {
-      await ensureDealTabPlacement(`${window.location.origin}/`);
-      setMessage('Вкладка CRM_DEAL_DETAIL_TAB привязана. Открой сделку воронки 15.');
+      await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
+      setMessage('Вкладка CRM_DEAL_DETAIL_TAB привязана (HANDLER=/api/frame). Открой сделку #15.');
     } catch (err) {
       setMessage(`placement.bind ошибка: ${err.message || err}`);
     } finally {
@@ -117,9 +117,9 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
         </button>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
-        Если 401 / нет token — задеплой билд с <code>/api/frame</code>, в локальном приложении
-        handler = <code>https://bitrixeazy.vercel.app/</code>, открой приложение из Битрикс (не
-        прямую ссылку), затем нажми кнопку снова.
+        В локальном приложении Битрикс укажи URL:{' '}
+        <code>https://bitrixeazy.vercel.app/api/frame</code> (и handler, и установка). Не корень
+        сайта — иначе POST → 405.
       </p>
 
       <div className="admin-grid">

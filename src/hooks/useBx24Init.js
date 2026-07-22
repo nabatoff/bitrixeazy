@@ -33,7 +33,7 @@ export function useBx24Init() {
         // Только мастер установки — не на каждый заход админа
         if (isInstallMode()) {
           try {
-            await ensureDealTabPlacement(`${window.location.origin}/`);
+            await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
           } catch (bindErr) {
             console.warn('placement.bind (install):', bindErr.message || bindErr);
           }
