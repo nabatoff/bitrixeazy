@@ -12,6 +12,11 @@ import {
 } from '../bitrix/bx24.js';
 import { collectUserDepartments, getCurrentUser } from '../bitrix/dealApi.js';
 
+function placementCode(info) {
+  if (!info) return '';
+  return String(info.placement || info.Placement || '');
+}
+
 export function useBx24Init() {
   const [state, setState] = useState({
     ready: false,
@@ -30,18 +35,20 @@ export function useBx24Init() {
       try {
         await initBx24();
 
-        // Только мастер установки — не на каждый заход админа
-        if (isInstallMode()) {
+        const placement = getPlacementInfo();
+        const code = placementCode(placement);
+        const inDealTab = code === 'CRM_DEAL_DETAIL_TAB';
+
+        // Не дергать placement.bind из вкладки сделки — handler уже binded → 400 в консоли
+        if (isInstallMode() && !inDealTab) {
           try {
             await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
           } catch (bindErr) {
-            // already binded обрабатывается как success внутри ensureDealTabPlacement
             console.warn('placement.bind (install):', bindErr.message || bindErr);
           }
           installFinish();
         }
 
-        const placement = getPlacementInfo();
         const dealId = resolveDealId(placement);
         const user = await getCurrentUser();
         const departments = collectUserDepartments(user);

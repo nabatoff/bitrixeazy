@@ -115,7 +115,9 @@ export function fitWindow() {
 
 export function isInstallMode() {
   try {
-    return Boolean(getBX24().install);
+    // Важно: не Boolean(fn) — у BX24 иногда install/installFinish путают типы
+    const v = getBX24().install;
+    return v === true || v === 1 || v === 'Y';
   } catch {
     return false;
   }
