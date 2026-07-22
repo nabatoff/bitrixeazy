@@ -1,10 +1,14 @@
-function formatBxError(err) {
+function deepErrorString(err) {
   if (err == null) return 'Unknown Bitrix error';
   if (typeof err === 'string') return err;
+  if (err instanceof Error) return err.message || String(err);
   const status = err.status || err.statusCode;
-  const code = err.error || err.ex || err.error_code;
-  const desc = err.error_description || err.error_msg || err.message;
-  const parts = [status, code, desc].filter(Boolean);
+  const code = typeof err.error === 'string' ? err.error : err.ex || err.error_code;
+  const desc =
+    err.error_description ||
+    err.error_msg ||
+    (typeof err.message === 'string' ? err.message : null);
+  const parts = [status, code, desc].filter((x) => x != null && typeof x !== 'object');
   if (parts.length) return parts.join(' — ');
   try {
     return JSON.stringify(err);
@@ -18,6 +22,10 @@ function getBX24() {
     throw new Error('window.BX24 недоступен — откройте приложение внутри Bitrix24');
   }
   return window.BX24;
+}
+
+function getPostAuth() {
+  return typeof window !== 'undefined' ? window.__BITRIX_POST_AUTH__ : null;
 }
 
 export function initBx24() {
@@ -40,7 +48,7 @@ export function bx24Call(method, params = {}) {
   return new Promise((resolve, reject) => {
     getBX24().callMethod(method, params, (result) => {
       if (result.error()) {
-        reject(new Error(formatBxError(result.error())));
+        reject(new Error(deepErrorString(result.error())));
         return;
       }
       resolve(result.data());
@@ -56,12 +64,25 @@ export function getPlacementInfo() {
   }
 }
 
+/** Unified auth: BX24.getAuth() or injected POST auth from /api/frame */
 export function getAuth() {
   try {
-    return getBX24().getAuth();
+    const fromBx = getBX24().getAuth();
+    if (fromBx?.access_token) return fromBx;
   } catch {
-    return null;
+    /* ignore */
   }
+  const post = getPostAuth();
+  if (post?.AUTH_ID) {
+    return {
+      access_token: post.AUTH_ID,
+      refresh_token: post.REFRESH_ID || '',
+      expires_in: post.AUTH_EXPIRES || '',
+      domain: String(post.DOMAIN || '').replace(/^https?:\/\//, ''),
+      member_id: post.member_id,
+    };
+  }
+  return null;
 }
 
 export function isAdmin() {
@@ -108,15 +129,46 @@ export function installFinish() {
   }
 }
 
-/** Register deal card tab (safe to call multiple times). */
+function resolveDomain(auth) {
+  const d = auth?.domain || getPostAuth()?.DOMAIN || '';
+  return String(d)
+    .replace(/^https?:\/\//, '')
+    .replace(/\/$/, '') || 'crm.artflowers.kz';
+}
+
+/**
+ * placement.bind via direct REST + access_token (обход 401 BX24 ajax на части порталов).
+ */
 export async function ensureDealTabPlacement(handlerUrl) {
   await refreshAuth();
+  const auth = getAuth();
+  if (!auth?.access_token) {
+    throw new Error(
+      'Нет access_token. Открой приложение из Битрикс (не прямой URL). Handler должен идти через /api/frame (POST).'
+    );
+  }
+
   const handler = handlerUrl || `${window.location.origin}/`;
-  return bx24Call('placement.bind', {
+  const domain = resolveDomain(auth);
+  const url = new URL(`https://${domain}/rest/placement.bind`);
+
+  const body = new URLSearchParams({
+    auth: auth.access_token,
     PLACEMENT: 'CRM_DEAL_DETAIL_TAB',
     HANDLER: handler,
     TITLE: 'BitrixEasy',
   });
+
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (data.error) {
+    throw new Error(deepErrorString(data));
+  }
+  return data.result;
 }
 
 /** Extract deal ID from CRM_DEAL_DETAIL_TAB placement. */

@@ -53,9 +53,14 @@ export default function App() {
     return (
       <div className="app">
         <div className="card">
-          <h2>Нет ID сделки</h2>
+          <h2>Приложение открыто вне вкладки сделки</h2>
           <p className="muted">
-            Встройте приложение как placement <code>CRM_DEAL_DETAIL_TAB</code> в карточке сделки.
+            Это нормально из меню / при установке. Чтобы вкладка появилась в сделке — админ → «Привязать
+            вкладку в сделку».
+          </p>
+          <p className="muted">
+            Auth: {bx.auth?.access_token ? 'есть token' : 'нет token (будет 401)'} · user:{' '}
+            {bx.user?.ID || '—'}
           </p>
           {bx.adminFlag && (
             <button type="button" className="btn btn-secondary" onClick={() => setShowAdmin(true)}>

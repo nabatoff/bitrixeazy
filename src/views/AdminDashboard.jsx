@@ -117,8 +117,9 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
         </button>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
-        Если 401 — в правах приложения должны быть CRM + Пользователи, URL =
-        https://bitrixeazy.vercel.app/, переустанови приложение после деплоя с middleware (POST).
+        Если 401 / нет token — задеплой билд с <code>/api/frame</code>, в локальном приложении
+        handler = <code>https://bitrixeazy.vercel.app/</code>, открой приложение из Битрикс (не
+        прямую ссылку), затем нажми кнопку снова.
       </p>
 
       <div className="admin-grid">
