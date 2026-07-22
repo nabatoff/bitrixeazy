@@ -117,9 +117,11 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
         </button>
       </div>
       <p className="muted" style={{ marginTop: 0 }}>
-        В локальном приложении Битрикс укажи URL:{' '}
-        <code>https://bitrixeazy.vercel.app/api/frame</code> (и handler, и установка). Не корень
-        сайта — иначе POST → 405.
+        URL handler: <code>https://bitrixeazy.vercel.app/api/frame</code>
+        <br />
+        Если <code>insufficient_scope</code> — в карточке локального приложения → Настройка прав →{' '}
+        <b>+ выбрать</b> → добавь скоуп <b>placement</b> (Встраивание / виджеты). Сохрани → заново
+        открой приложение → снова нажми эту кнопку.
       </p>
 
       <div className="admin-grid">

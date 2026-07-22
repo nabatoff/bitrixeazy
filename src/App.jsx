@@ -59,8 +59,11 @@ export default function App() {
             вкладку в сделку».
           </p>
           <p className="muted">
-            Auth: {bx.auth?.access_token ? 'есть token' : 'нет token (будет 401)'} · user:{' '}
-            {bx.user?.ID || '—'}
+            Auth: {bx.auth?.access_token ? 'есть token' : 'нет token'} · user: {bx.user?.ID || '—'}
+          </p>
+          <p className="muted">
+            Нет вкладки в сделке? В правах приложения нужен скоуп <code>placement</code> (не только
+            CRM/user), потом «Привязать вкладку».
           </p>
           {bx.adminFlag && (
             <button type="button" className="btn btn-secondary" onClick={() => setShowAdmin(true)}>
