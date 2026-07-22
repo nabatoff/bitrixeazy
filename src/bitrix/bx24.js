@@ -166,9 +166,14 @@ export async function ensureDealTabPlacement(handlerUrl) {
   });
   const data = await res.json().catch(() => ({}));
   if (data.error) {
-    throw new Error(deepErrorString(data));
+    const msg = deepErrorString(data);
+    // Уже привязано — успех
+    if (/already binded|already bound/i.test(msg)) {
+      return { alreadyBound: true };
+    }
+    throw new Error(msg);
   }
-  return data.result;
+  return data.result ?? { ok: true };
 }
 
 /** Extract deal ID from CRM_DEAL_DETAIL_TAB placement. */

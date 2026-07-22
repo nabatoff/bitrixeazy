@@ -35,6 +35,7 @@ export function useBx24Init() {
           try {
             await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
           } catch (bindErr) {
+            // already binded обрабатывается как success внутри ensureDealTabPlacement
             console.warn('placement.bind (install):', bindErr.message || bindErr);
           }
           installFinish();

@@ -93,8 +93,12 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
     setBinding(true);
     setMessage('');
     try {
-      await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
-      setMessage('Вкладка CRM_DEAL_DETAIL_TAB привязана (HANDLER=/api/frame). Открой сделку #15.');
+      const result = await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
+      setMessage(
+        result?.alreadyBound
+          ? 'Вкладка уже была привязана. Ищи «BitrixEasy» / «Сделка (виджет)» в карточке сделки.'
+          : 'Вкладка CRM_DEAL_DETAIL_TAB привязана. Открой сделку воронки 15.'
+      );
     } catch (err) {
       setMessage(`placement.bind ошибка: ${err.message || err}`);
     } finally {
