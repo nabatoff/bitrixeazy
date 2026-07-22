@@ -251,8 +251,11 @@ export function FieldForm({
         </div>
       )}
 
-      {groups.map((g) => (
-        <section className="card" key={g.title}>
+      {groups.map((g, index) => (
+        <section
+          className={`card${index === 0 ? ' card-span-full' : ''}`}
+          key={g.title}
+        >
           <h2>{g.title}</h2>
           {g.fields.map((f) => (
             <SingleField

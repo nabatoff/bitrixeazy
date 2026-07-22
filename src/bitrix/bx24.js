@@ -147,7 +147,15 @@ export function appOptionSet(name, value) {
 
 export function fitWindow() {
   try {
-    getBX24().fitWindow();
+    const bx = getBX24();
+    // ширина = контейнер вкладки; высота по контенту
+    if (typeof bx.resizeWindow === 'function') {
+      const w = Math.max(document.documentElement.scrollWidth, window.innerWidth || 0);
+      const h = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0);
+      bx.resizeWindow(w, h + 24);
+    } else {
+      bx.fitWindow();
+    }
   } catch {
     /* ignore outside iframe */
   }
