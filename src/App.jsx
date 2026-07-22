@@ -12,7 +12,7 @@ import { PurchaserView } from './views/PurchaserView.jsx';
 export default function App() {
   const bx = useBx24Init();
   const { config, loading: configLoading, error: configError, saving: configSaving, saveConfig } =
-    useAppConfig();
+    useAppConfig(bx.ready);
   const {
     deal,
     client,
@@ -45,8 +45,17 @@ export default function App() {
     );
   }
 
-  if (!bx.ready || configLoading || dealLoading || !config) {
-    return <div className="loading">Загрузка…</div>;
+  if (!bx.ready || configLoading || (bx.dealId && dealLoading) || !config) {
+    const parts = [];
+    if (!bx.ready) parts.push(bx.step || 'BX24');
+    else if (configLoading) parts.push('config');
+    else if (bx.dealId && dealLoading) parts.push(`deal #${bx.dealId}`);
+    else if (!config) parts.push('config merge');
+    return (
+      <div className="loading">
+        Загрузка… <span className="muted">({parts.join(' → ') || '…'})</span>
+      </div>
+    );
   }
 
   if (!bx.dealId) {
@@ -59,7 +68,8 @@ export default function App() {
             вкладку в сделку».
           </p>
           <p className="muted">
-            Auth: {bx.auth?.access_token ? 'есть token' : 'нет token'} · user: {bx.user?.ID || '—'}
+            Auth: {bx.auth?.access_token ? 'есть token' : 'нет token'} · user: {bx.user?.ID || '—'} ·
+            placement: {bx.placementCode || '—'}
           </p>
           <p className="muted">
             Нет вкладки в сделке? В правах приложения нужен скоуп <code>placement</code> (не только
@@ -71,6 +81,27 @@ export default function App() {
             </button>
           )}
         </div>
+        {showAdmin && (
+          <AdminDashboard
+            config={config}
+            onSave={saveConfig}
+            saving={configSaving}
+            onClose={() => setShowAdmin(false)}
+          />
+        )}
+      </div>
+    );
+  }
+
+  if (!deal) {
+    return (
+      <div className="app">
+        <div className="errors">Не удалось загрузить сделку #{bx.dealId}: {dealError || 'нет данных'}</div>
+        {bx.adminFlag && (
+          <button type="button" className="btn btn-secondary" onClick={() => setShowAdmin(true)}>
+            ⚙ Админ
+          </button>
+        )}
         {showAdmin && (
           <AdminDashboard
             config={config}

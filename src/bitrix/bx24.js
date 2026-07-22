@@ -28,10 +28,30 @@ function getPostAuth() {
   return typeof window !== 'undefined' ? window.__BITRIX_POST_AUTH__ : null;
 }
 
-export function initBx24() {
-  return new Promise((resolve) => {
-    getBX24().init(() => resolve(getBX24()));
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timeout ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
   });
+}
+
+export function initBx24() {
+  return withTimeout(
+    new Promise((resolve) => {
+      getBX24().init(() => resolve(getBX24()));
+    }),
+    12000,
+    'BX24.init'
+  );
 }
 
 export function refreshAuth() {
@@ -45,15 +65,19 @@ export function refreshAuth() {
 }
 
 export function bx24Call(method, params = {}) {
-  return new Promise((resolve, reject) => {
-    getBX24().callMethod(method, params, (result) => {
-      if (result.error()) {
-        reject(new Error(deepErrorString(result.error())));
-        return;
-      }
-      resolve(result.data());
-    });
-  });
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      getBX24().callMethod(method, params, (result) => {
+        if (result.error()) {
+          reject(new Error(deepErrorString(result.error())));
+          return;
+        }
+        resolve(result.data());
+      });
+    }),
+    15000,
+    method
+  );
 }
 
 export function getPlacementInfo() {
@@ -94,15 +118,31 @@ export function isAdmin() {
 }
 
 export function appOptionGet(name) {
-  return new Promise((resolve) => {
-    getBX24().appOption.get(name, (value) => resolve(value));
-  });
+  return withTimeout(
+    new Promise((resolve) => {
+      try {
+        getBX24().appOption.get(name, (value) => resolve(value));
+      } catch {
+        resolve(null);
+      }
+    }),
+    5000,
+    'appOption.get'
+  ).catch(() => null);
 }
 
 export function appOptionSet(name, value) {
-  return new Promise((resolve) => {
-    getBX24().appOption.set(name, value, () => resolve(true));
-  });
+  return withTimeout(
+    new Promise((resolve) => {
+      try {
+        getBX24().appOption.set(name, value, () => resolve(true));
+      } catch {
+        resolve(false);
+      }
+    }),
+    5000,
+    'appOption.set'
+  ).catch(() => false);
 }
 
 export function fitWindow() {
@@ -115,7 +155,6 @@ export function fitWindow() {
 
 export function isInstallMode() {
   try {
-    // Важно: не Boolean(fn) — у BX24 иногда install/installFinish путают типы
     const v = getBX24().install;
     return v === true || v === 1 || v === 'Y';
   } catch {
@@ -139,14 +178,15 @@ function resolveDomain(auth) {
 }
 
 /**
- * placement.bind via direct REST + access_token (обход 401 BX24 ajax на части порталов).
+ * placement.bind via direct REST + access_token.
+ * "Handler already binded" = уже ок.
  */
 export async function ensureDealTabPlacement(handlerUrl) {
   await refreshAuth();
   const auth = getAuth();
   if (!auth?.access_token) {
     throw new Error(
-      'Нет access_token. Открой приложение из Битрикс (не прямой URL). Handler должен идти через /api/frame (POST).'
+      'Нет access_token. Открой приложение из Битрикс (не прямой URL). Handler: /api/frame.'
     );
   }
 
@@ -169,7 +209,6 @@ export async function ensureDealTabPlacement(handlerUrl) {
   const data = await res.json().catch(() => ({}));
   if (data.error) {
     const msg = deepErrorString(data);
-    // Уже привязано — успех
     if (/already binded|already bound/i.test(msg)) {
       return { alreadyBound: true };
     }
@@ -181,12 +220,20 @@ export async function ensureDealTabPlacement(handlerUrl) {
 /** Extract deal ID from CRM_DEAL_DETAIL_TAB placement. */
 export function resolveDealId(placement) {
   if (!placement) return null;
-  const opts = placement.options || {};
+  let opts = placement.options ?? placement.placementOptions ?? {};
+  if (typeof opts === 'string') {
+    try {
+      opts = JSON.parse(opts);
+    } catch {
+      opts = {};
+    }
+  }
   const id =
     opts.ID ||
     opts.DEAL_ID ||
     opts.ENTITY_ID ||
-    placement.placementOptions?.ID ||
+    opts.id ||
+    opts.dealId ||
     null;
-  return id != null ? String(id) : null;
+  return id != null && String(id) !== '0' ? String(id) : null;
 }

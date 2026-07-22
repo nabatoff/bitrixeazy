@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { appOptionGet, appOptionSet } from '../bitrix/bx24.js';
 import { CONFIG_KEY, mergeConfig } from '../config/defaultConfig.js';
 
-export function useAppConfig() {
+export function useAppConfig(enabled = true) {
   const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(Boolean(enabled));
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -33,8 +33,10 @@ export function useAppConfig() {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     reload();
-  }, [reload]);
+    return undefined;
+  }, [enabled, reload]);
 
   const saveConfig = useCallback(async (next) => {
     setSaving(true);

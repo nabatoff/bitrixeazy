@@ -10,20 +10,29 @@ export function useDeal(dealId) {
 
   const reload = useCallback(async () => {
     if (!dealId) {
+      setDeal(null);
+      setClient(null);
       setLoading(false);
-      setError('Не найден ID сделки (откройте вкладку из карточки сделки)');
+      setError(null);
       return null;
     }
     setLoading(true);
     setError(null);
     try {
       const data = await getDeal(dealId);
-      const clientData = await getDealClient(data);
+      let clientData = null;
+      try {
+        clientData = await getDealClient(data);
+      } catch (clientErr) {
+        console.warn('getDealClient:', clientErr.message || clientErr);
+        clientData = { fullName: '', phone: '', companyTitle: '' };
+      }
       setDeal(data);
       setClient(clientData);
       return data;
     } catch (err) {
       setError(err.message || String(err));
+      setDeal(null);
       return null;
     } finally {
       setLoading(false);

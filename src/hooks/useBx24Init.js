@@ -26,6 +26,7 @@ export function useBx24Init() {
     departments: [],
     adminFlag: false,
     auth: null,
+    step: 'init',
   });
 
   useEffect(() => {
@@ -33,14 +34,16 @@ export function useBx24Init() {
 
     (async () => {
       try {
+        setState((s) => ({ ...s, step: 'BX24.init' }));
         await initBx24();
 
         const placement = getPlacementInfo();
         const code = placementCode(placement);
         const inDealTab = code === 'CRM_DEAL_DETAIL_TAB';
+        const dealId = resolveDealId(placement);
 
-        // Не дергать placement.bind из вкладки сделки — handler уже binded → 400 в консоли
         if (isInstallMode() && !inDealTab) {
+          setState((s) => ({ ...s, step: 'placement.bind' }));
           try {
             await ensureDealTabPlacement(`${window.location.origin}/api/frame`);
           } catch (bindErr) {
@@ -49,9 +52,16 @@ export function useBx24Init() {
           installFinish();
         }
 
-        const dealId = resolveDealId(placement);
-        const user = await getCurrentUser();
-        const departments = collectUserDepartments(user);
+        setState((s) => ({ ...s, step: 'user.current' }));
+        let user = null;
+        let departments = [];
+        try {
+          user = await getCurrentUser();
+          departments = collectUserDepartments(user);
+        } catch (userErr) {
+          console.warn('user.current:', userErr.message || userErr);
+        }
+
         const adminFlag = isAdmin();
         const auth = getAuth();
 
@@ -64,6 +74,8 @@ export function useBx24Init() {
           departments,
           adminFlag,
           auth,
+          step: 'ready',
+          placementCode: code,
         });
         fitWindow();
       } catch (err) {
@@ -72,6 +84,7 @@ export function useBx24Init() {
           ...s,
           ready: false,
           error: err.message || String(err),
+          step: 'error',
         }));
       }
     })();
