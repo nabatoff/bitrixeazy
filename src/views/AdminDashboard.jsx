@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ensureDealTabPlacement } from '../bitrix/bx24.js';
 import { defaultConfig } from '../config/defaultConfig.js';
 import { validateConfigShape } from '../config/configSchema.js';
 
@@ -23,6 +24,7 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
   });
   const [message, setMessage] = useState('');
   const [errors, setErrors] = useState([]);
+  const [binding, setBinding] = useState(false);
 
   useEffect(() => {
     setDraft(structuredClone(config || defaultConfig));
@@ -87,6 +89,19 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
     setMessage(ok ? 'Конфиг сохранён в appOption' : 'Ошибка сохранения');
   };
 
+  const handleBindTab = async () => {
+    setBinding(true);
+    setMessage('');
+    try {
+      await ensureDealTabPlacement(`${window.location.origin}/`);
+      setMessage('Вкладка CRM_DEAL_DETAIL_TAB привязана. Открой сделку воронки 15.');
+    } catch (err) {
+      setMessage(`placement.bind ошибка: ${err.message || err}`);
+    } finally {
+      setBinding(false);
+    }
+  };
+
   return (
     <div className="card">
       <div className="app-header">
@@ -95,6 +110,16 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
           Закрыть
         </button>
       </div>
+
+      <div className="actions" style={{ marginBottom: 12 }}>
+        <button type="button" className="btn btn-primary" disabled={binding} onClick={handleBindTab}>
+          {binding ? 'Привязка…' : 'Привязать вкладку в сделку'}
+        </button>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Если 401 — в правах приложения должны быть CRM + Пользователи, URL =
+        https://bitrixeazy.vercel.app/, переустанови приложение после деплоя с middleware (POST).
+      </p>
 
       <div className="admin-grid">
         <label>

@@ -1,3 +1,18 @@
+function formatBxError(err) {
+  if (err == null) return 'Unknown Bitrix error';
+  if (typeof err === 'string') return err;
+  const status = err.status || err.statusCode;
+  const code = err.error || err.ex || err.error_code;
+  const desc = err.error_description || err.error_msg || err.message;
+  const parts = [status, code, desc].filter(Boolean);
+  if (parts.length) return parts.join(' — ');
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
 function getBX24() {
   if (typeof window === 'undefined' || !window.BX24) {
     throw new Error('window.BX24 недоступен — откройте приложение внутри Bitrix24');
@@ -11,12 +26,21 @@ export function initBx24() {
   });
 }
 
+export function refreshAuth() {
+  return new Promise((resolve) => {
+    try {
+      getBX24().refreshAuth(() => resolve(true));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 export function bx24Call(method, params = {}) {
   return new Promise((resolve, reject) => {
     getBX24().callMethod(method, params, (result) => {
       if (result.error()) {
-        const err = result.error();
-        reject(new Error(typeof err === 'string' ? err : err.ex || err.error_description || JSON.stringify(err)));
+        reject(new Error(formatBxError(result.error())));
         return;
       }
       resolve(result.data());
@@ -86,6 +110,7 @@ export function installFinish() {
 
 /** Register deal card tab (safe to call multiple times). */
 export async function ensureDealTabPlacement(handlerUrl) {
+  await refreshAuth();
   const handler = handlerUrl || `${window.location.origin}/`;
   return bx24Call('placement.bind', {
     PLACEMENT: 'CRM_DEAL_DETAIL_TAB',
