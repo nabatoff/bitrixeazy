@@ -68,6 +68,32 @@ export function fitWindow() {
   }
 }
 
+export function isInstallMode() {
+  try {
+    return Boolean(getBX24().install);
+  } catch {
+    return false;
+  }
+}
+
+export function installFinish() {
+  try {
+    getBX24().installFinish();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Register deal card tab (safe to call multiple times). */
+export async function ensureDealTabPlacement(handlerUrl) {
+  const handler = handlerUrl || `${window.location.origin}/`;
+  return bx24Call('placement.bind', {
+    PLACEMENT: 'CRM_DEAL_DETAIL_TAB',
+    HANDLER: handler,
+    TITLE: 'BitrixEasy',
+  });
+}
+
 /** Extract deal ID from CRM_DEAL_DETAIL_TAB placement. */
 export function resolveDealId(placement) {
   if (!placement) return null;

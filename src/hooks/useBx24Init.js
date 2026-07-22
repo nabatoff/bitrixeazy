@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { fitWindow, getAuth, getPlacementInfo, initBx24, isAdmin, resolveDealId } from '../bitrix/bx24.js';
+import {
+  ensureDealTabPlacement,
+  fitWindow,
+  getAuth,
+  getPlacementInfo,
+  initBx24,
+  installFinish,
+  isAdmin,
+  isInstallMode,
+  resolveDealId,
+} from '../bitrix/bx24.js';
 import { collectUserDepartments, getCurrentUser } from '../bitrix/dealApi.js';
 
 export function useBx24Init() {
@@ -19,6 +29,19 @@ export function useBx24Init() {
     (async () => {
       try {
         await initBx24();
+
+        // First open / install URL: bind deal tab + finish installer
+        if (isInstallMode() || isAdmin()) {
+          try {
+            await ensureDealTabPlacement(`${window.location.origin}/`);
+          } catch (bindErr) {
+            console.warn('placement.bind:', bindErr.message || bindErr);
+          }
+          if (isInstallMode()) {
+            installFinish();
+          }
+        }
+
         const placement = getPlacementInfo();
         const dealId = resolveDealId(placement);
         const user = await getCurrentUser();
