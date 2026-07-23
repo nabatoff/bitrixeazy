@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatUserName, getUser, uploadDealFile } from '../bitrix/dealApi.js';
 import { fitWindow } from '../bitrix/bx24.js';
+import { ClientChatPanel } from '../components/ClientChatPanel.jsx';
 import { FieldForm } from '../components/FieldForm.jsx';
 import { StageStepper } from '../components/StageStepper.jsx';
 import { WhoIsWorking } from '../components/WhoIsWorking.jsx';
@@ -81,12 +82,17 @@ export function RoleScreen({
 
   const dealState = useMemo(() => ({ ...deal, ...values }), [deal, values]);
 
+  // фазы бухгалтера/директора — только по сохранённой сделке,
+  // иначе галка в форме сразу прячет Save («задач нет»)
+  // закуп: draft нужен, чтобы комментарий появился при выборе «с изменениями»
+  const phaseSource = role === 'purchaser' ? dealState : deal;
+
   const visibility = useMemo(
     () =>
-      filterVisibleFields(role, fieldDefs, dealState, {
+      filterVisibleFields(role, fieldDefs, phaseSource, {
         lockIsMine: Boolean(lock.isMine),
       }),
-    [role, fieldDefs, dealState, lock.isMine]
+    [role, fieldDefs, phaseSource, lock.isMine]
   );
 
   const visibleDefs = visibility.fields;
@@ -255,6 +261,8 @@ export function RoleScreen({
           emptyMessage={visibility.emptyMessage}
         />
       </div>
+
+      <ClientChatPanel dealId={dealId} client={client} currentUserId={currentUserId} />
     </div>
   );
 }

@@ -789,3 +789,136 @@ body {
     padding: 16px;
   }
 }
+
+/* Client WhatsApp / Open Lines chat */
+.client-chat {
+  margin-top: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.client-chat-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.client-chat-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.client-chat-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.client-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.client-chat-meta {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.client-chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0 4px;
+}
+
+.client-chat-empty a.btn-primary {
+  text-decoration: none;
+}
+
+.client-chat-list {
+  height: 260px;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: #f3f4f6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.client-chat-msg {
+  max-width: 85%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.4;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.client-chat-msg.is-in {
+  align-self: flex-start;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.client-chat-msg.is-out {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border: 1px solid #c5d4f0;
+  color: var(--text);
+}
+
+.client-chat-msg.is-system {
+  align-self: center;
+  background: #fff8e6;
+  color: var(--text-secondary);
+  font-size: 12px;
+  max-width: 95%;
+  text-align: center;
+}
+
+.client-chat-msg-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.client-chat-msg-time {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.client-chat-compose {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  align-items: flex-end;
+}
+
+.client-chat-compose textarea {
+  flex: 1;
+  border: 1px solid #d1d5db;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 14px;
+  resize: vertical;
+  min-height: 44px;
+}
+
+.client-chat-compose textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+  border-color: transparent;
+}

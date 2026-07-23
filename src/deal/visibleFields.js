@@ -83,38 +83,51 @@ export function filterVisibleFields(role, fieldDefs, deal, { lockIsMine = false 
     ].map((f) => ({ ...f, section: 'Сделка' }));
 
     const tasks = [];
-    if (invoiceRequested(deal) && !invoiceIssued(deal)) {
+    const needInvoice = invoiceRequested(deal) && !invoiceIssued(deal);
+    const needPrepay =
+      !prepayReceived(deal) &&
+      !approvedWithoutPrepay(deal) &&
+      (invoiceIssued(deal) || invoiceRequested(deal));
+    const needFullPay =
+      !fullPayReceived(deal) &&
+      !isTruthyBool(deal?.UF_CRM_1764577872449) &&
+      (prepayReceived(deal) ||
+        approvedWithoutPrepay(deal) ||
+        invoiceIssued(deal) ||
+        needPrepay);
+
+    if (needInvoice) {
       tasks.push(
         { ...byCode('UF_CRM_1784636341021', 'edit'), section: 'Текущая задача' },
         { ...byCode('UF_CRM_1764676465', 'edit'), section: 'Текущая задача' }
       );
-    } else if (
-      invoiceIssued(deal) &&
-      !prepayReceived(deal) &&
-      !approvedWithoutPrepay(deal)
-    ) {
+    }
+    if (needPrepay) {
       tasks.push(
         { ...byCode('UF_CRM_1764332847245', 'edit'), section: 'Текущая задача' },
         { ...byCode('UF_CRM_1764676465', 'edit'), section: 'Текущая задача' }
       );
-    } else if (
-      (prepayReceived(deal) || approvedWithoutPrepay(deal) || invoiceIssued(deal)) &&
-      !fullPayReceived(deal) &&
-      !isTruthyBool(deal?.UF_CRM_1764577872449)
-    ) {
-      // фаза полной оплаты (когда уже прошли предоплату/счёт, и выдача без оплаты ещё не закрыла тему)
-      const purchased = Boolean(purchaseStatus(deal));
-      if (purchased || invoiceIssued(deal)) {
-        tasks.push(
-          { ...byCode('UF_CRM_1764577842986', 'edit'), section: 'Текущая задача' },
-          { ...byCode('UF_CRM_1784532842739', 'edit'), section: 'Текущая задача' }
-        );
-      }
+    }
+    // полную оплату и накладную можно закрыть в том же сохранении, что и предоплату
+    if (needFullPay || needPrepay) {
+      tasks.push(
+        { ...byCode('UF_CRM_1764577842986', 'edit'), section: 'Текущая задача' },
+        { ...byCode('UF_CRM_1784532842739', 'edit'), section: 'Текущая задача' }
+      );
+    }
+
+    // dedupe by code (сумма предоплаты может попасть дважды)
+    const seen = new Set();
+    const uniqueTasks = [];
+    for (const f of tasks) {
+      if (seen.has(f.code)) continue;
+      seen.add(f.code);
+      uniqueTasks.push(f);
     }
 
     return {
-      fields: [...info, ...tasks],
-      emptyMessage: tasks.length
+      fields: [...info, ...uniqueTasks],
+      emptyMessage: uniqueTasks.length
         ? null
         : 'Сейчас задач нет — ждите уведомление (счёт / предоплата / полная оплата).',
       hideFormUntilLock: false,

@@ -273,6 +273,14 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
         Поля ролей для воронки 15 уже зашиты в defaultConfig. Масштаб на 6 воронок — через «+ Воронка»
         и привязку отделов. Конфиг хранится в <code>BX24.appOption</code> (ключ deal_widget_config).
       </p>
+      <p className="muted">
+        Чат с клиентом: в правах локального приложения нужны скоупы <b>im</b> и <b>imopenlines</b>
+        (кроме crm / user / placement). КЦ:{' '}
+        <a href="https://crm.artflowers.kz/local/custom_chat/" target="_blank" rel="noreferrer">
+          /local/custom_chat/
+        </a>
+        . После смены прав переоткрой виджет из сделки.
+      </p>
     </div>
   );
 }
