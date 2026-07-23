@@ -184,85 +184,89 @@ export function RoleScreen({
       : visibleDefs;
 
   return (
-    <div className="screen-wrap">
-      <WhoIsWorking deal={deal} lockFields={funnel?.lockFields} />
+    <div className="screen-wrap screen-wrap--split">
+      <div className="screen-col-main">
+        <WhoIsWorking deal={deal} lockFields={funnel?.lockFields} />
 
-      {showStepper && (
-        <StageStepper
-          deal={deal}
-          categoryId={deal?.CATEGORY_ID}
-          canEdit={role === 'manager'}
-          onMoveStage={onMoveStage}
-          moving={movingStage}
-        />
-      )}
+        {showStepper && (
+          <StageStepper
+            deal={deal}
+            categoryId={deal?.CATEGORY_ID}
+            canEdit={role === 'manager'}
+            onMoveStage={onMoveStage}
+            moving={movingStage}
+          />
+        )}
 
-      <div className="screen-card">
-        <div className="screen-header">
-          <h1 className="screen-title">{title}</h1>
-          <div className="screen-header-actions">
-            <span className="badge">{role}</span>
-            {useLock && lock.isFree && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={lock.busy}
-                onClick={lock.take}
-              >
-                {lock.busy ? '…' : 'Взять в работу'}
-              </button>
-            )}
-            {useLock && lock.isMine && (lock.isMine || isAppAdmin) && (
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={lock.busy}
-                onClick={lock.release}
-              >
-                Освободить
-              </button>
-            )}
+        <div className="screen-card">
+          <div className="screen-header">
+            <h1 className="screen-title">{title}</h1>
+            <div className="screen-header-actions">
+              <span className="badge">{role}</span>
+              {useLock && lock.isFree && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={lock.busy}
+                  onClick={lock.take}
+                >
+                  {lock.busy ? '…' : 'Взять в работу'}
+                </button>
+              )}
+              {useLock && lock.isMine && (lock.isMine || isAppAdmin) && (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  disabled={lock.busy}
+                  onClick={lock.release}
+                >
+                  Освободить
+                </button>
+              )}
+            </div>
           </div>
+
+          {useLock && lock.isBlocked && (
+            <div className="screen-lock-banner banner-block">
+              Сделка в работе у <strong>{lock.lockUserName || `ID ${lock.lockUserId}`}</strong>.
+              Редактирование заблокировано.
+            </div>
+          )}
+
+          {useLock && lock.isFree && (
+            <div className="screen-lock-banner banner-warn">
+              Сделка свободна. Возьмите в работу, чтобы редактировать.
+              {lock.error ? <div className="muted">{lock.error}</div> : null}
+            </div>
+          )}
+
+          {visibility.hideFormUntilLock && !lock.isMine && !lock.isBlocked && (
+            <div className="screen-lock-banner banner-warn">
+              После «Взять в работу» откроются поля закупа.
+            </div>
+          )}
+
+          <FieldForm
+            role={role}
+            fieldDefs={formDefs}
+            values={values}
+            onChange={onChange}
+            client={client}
+            locked={hideEdits}
+            errors={errors}
+            onSave={onSave}
+            saving={saving || uploadingFile}
+            assignedName={assignedName}
+            showSave={showSave}
+            onUploadFile={onUploadFile}
+            emptyMessage={visibility.emptyMessage}
+          />
         </div>
-
-        {useLock && lock.isBlocked && (
-          <div className="screen-lock-banner banner-block">
-            Сделка в работе у <strong>{lock.lockUserName || `ID ${lock.lockUserId}`}</strong>.
-            Редактирование заблокировано.
-          </div>
-        )}
-
-        {useLock && lock.isFree && (
-          <div className="screen-lock-banner banner-warn">
-            Сделка свободна. Возьмите в работу, чтобы редактировать.
-            {lock.error ? <div className="muted">{lock.error}</div> : null}
-          </div>
-        )}
-
-        {visibility.hideFormUntilLock && !lock.isMine && !lock.isBlocked && (
-          <div className="screen-lock-banner banner-warn">
-            После «Взять в работу» откроются поля закупа.
-          </div>
-        )}
-
-        <FieldForm
-          role={role}
-          fieldDefs={formDefs}
-          values={values}
-          onChange={onChange}
-          client={client}
-          locked={hideEdits}
-          errors={errors}
-          onSave={onSave}
-          saving={saving || uploadingFile}
-          assignedName={assignedName}
-          showSave={showSave}
-          onUploadFile={onUploadFile}
-          emptyMessage={visibility.emptyMessage}
-        />
       </div>
 
-      <ClientChatPanel dealId={dealId} client={client} currentUserId={currentUserId} />
+      <aside className="screen-col-chat">
+        <ClientChatPanel dealId={dealId} client={client} currentUserId={currentUserId} />
+      </aside>
     </div>
   );
 }

@@ -1,25 +1,3 @@
-# Что сделать с PHP КЦ (просто)
-
-Deep-link = если открыть  
-`https://crm.artflowers.kz/local/custom_chat/?chatId=123`  
-страница **сама откроет этот чат**, а не просто список.
-
-Виджет кнопкой «Открыть в КЦ» как раз так и ходит.
-
-## Правка (1 место в конце файла)
-
-Найди в самом конце `<script>` / `BX.ready` эти строки:
-
-```javascript
-	updateSendButton();
-	loadChatList();
-	setInterval(loadChatList, 30000);
-});
-```
-
-**Замени их целиком на:**
-
-```javascript
 	updateSendButton();
 	loadChatList();
 	setInterval(loadChatList, 30000);
@@ -72,10 +50,3 @@ Deep-link = если открыть
 		}
 	})();
 });
-```
-
-Сохрани файл на сервере (`/local/custom_chat/index.php` или как у тебя называется).
-
-Проверка: открой  
-`https://crm.artflowers.kz/local/custom_chat/?chatId=ЧИСЛО_ИЗ_СУЩЕСТВУЮЩЕГО_ЧАТА`  
-— должен сразу открыться диалог.

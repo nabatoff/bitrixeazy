@@ -1,49 +1,250 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { contactCenterChatUrl } from '../config/contactCenter.js';
 import {
+  contactCenterOriginBase,
+  downloadFileUrl,
   findPersonalChatForDeal,
   formatMessageTime,
   getDialogMessages,
+  getFileIds,
+  isAudioFile,
+  isImageFile,
   isOutgoingMessage,
   isSystemMessage,
+  isVideoFile,
   markDialogRead,
+  mergeFilesMap,
+  messagePlainText,
   sendDialogMessage,
-  stripBbLite,
+  shouldRenderMessage,
+  systemMessageLabel,
+  uploadFileToChat,
+  waFfmpegAssetUrl,
   waMeUrl,
 } from '../bitrix/openLines.js';
+
+function loadScriptOnce(src, key) {
+  if (typeof window === 'undefined') return Promise.reject();
+  if (window[key]) return window[key];
+  window[key] = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`Script load failed: ${src}`));
+    document.head.appendChild(s);
+  });
+  return window[key];
+}
+
+let ffmpegInstance = null;
+async function ensureFfmpeg() {
+  if (ffmpegInstance) return ffmpegInstance;
+  const base = contactCenterOriginBase();
+  await loadScriptOnce(`${base}wa-ffmpeg/ffmpeg.js`, '__waFfmpegLib');
+  await loadScriptOnce(
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js',
+    '__waFfmpegUtil'
+  );
+  const { FFmpeg } = window.FFmpegWASM;
+  const ffmpeg = new FFmpeg();
+  await ffmpeg.load({
+    coreURL: waFfmpegAssetUrl('core-js'),
+    wasmURL: waFfmpegAssetUrl('core-wasm'),
+  });
+  ffmpegInstance = ffmpeg;
+  return ffmpeg;
+}
+
+async function convertToOgg(blob, mime, onProgress) {
+  if (onProgress) onProgress('Конвертация OGG…');
+  const ffmpeg = await ensureFfmpeg();
+  const { fetchFile } = window.FFmpegUtil;
+  const type = (mime || blob.type || '').toLowerCase();
+  let ext = 'webm';
+  if (type.includes('ogg')) ext = 'ogg';
+  else if (type.includes('mp4') || type.includes('m4a')) ext = 'm4a';
+  const inName = `in.${ext}`;
+  const outName = 'out.ogg';
+  await ffmpeg.writeFile(inName, await fetchFile(blob));
+  const code = await ffmpeg.exec([
+    '-i',
+    inName,
+    '-vn',
+    '-c:a',
+    'libopus',
+    '-ar',
+    '16000',
+    '-ac',
+    '1',
+    '-b:a',
+    '16k',
+    '-application',
+    'voip',
+    '-y',
+    outName,
+  ]);
+  if (code !== 0) throw new Error(`FFmpeg exit ${code}`);
+  const data = await ffmpeg.readFile(outName);
+  await ffmpeg.deleteFile(inName).catch(() => {});
+  await ffmpeg.deleteFile(outName).catch(() => {});
+  const uid = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  return new File([new Uint8Array(data)], `voice_${uid}.ogg`, { type: 'audio/ogg' });
+}
+
+function pickMime() {
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+    'audio/mp4',
+  ];
+  for (const t of types) {
+    if (window.MediaRecorder?.isTypeSupported?.(t)) return t;
+  }
+  return '';
+}
+
+function ChatMedia({ fileId, file, dialogId }) {
+  const [src, setSrc] = useState(
+    () => file?.urlPreview || file?.urlShow || file?.urlDownload || ''
+  );
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (src) return;
+      try {
+        const url = await downloadFileUrl(dialogId, fileId);
+        if (!cancelled && url) setSrc(url);
+        else if (!cancelled) setErr(true);
+      } catch {
+        if (!cancelled) setErr(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dialogId, fileId, src]);
+
+  if (err) {
+    return <div className="wa-media-fallback">Не удалось загрузить файл</div>;
+  }
+  if (!src) {
+    return <div className="wa-media-fallback">Загрузка…</div>;
+  }
+
+  if (isImageFile(file) || (!file && /\.(jpe?g|png|gif|webp)(\?|$)/i.test(src))) {
+    return (
+      <a className="wa-media" href={src} target="_blank" rel="noreferrer">
+        <img src={src} alt={file?.name || ''} loading="lazy" />
+      </a>
+    );
+  }
+  if (isAudioFile(file)) {
+    return (
+      <div className="wa-media">
+        <audio controls preload="metadata" src={src} className="wa-voice" />
+      </div>
+    );
+  }
+  if (isVideoFile(file)) {
+    return (
+      <div className="wa-media">
+        <video controls preload="metadata" src={src} />
+      </div>
+    );
+  }
+  return (
+    <a className="wa-file-link" href={src} target="_blank" rel="noreferrer">
+      📎 {file?.name || `Файл #${fileId}`}
+    </a>
+  );
+}
+
+function MessageBubble({ msg, currentUserId, filesMap, dialogId }) {
+  if (!shouldRenderMessage(msg)) return null;
+
+  const system = isSystemMessage(msg);
+  const out = !system && isOutgoingMessage(msg, currentUserId);
+  const plain = system ? systemMessageLabel(msg) : messagePlainText(msg);
+  const fileIds = getFileIds(msg);
+
+  return (
+    <div className={`wa-msg ${system ? 'system' : out ? 'out' : 'in'}`}>
+      {fileIds.map((id) => (
+        <ChatMedia key={id} fileId={id} file={filesMap[id]} dialogId={dialogId} />
+      ))}
+      {plain ? <span className="wa-msg-text">{plain}</span> : null}
+      <span className="wa-msg-time">{formatMessageTime(msg.date || msg.DATE)}</span>
+    </div>
+  );
+}
 
 export function ClientChatPanel({ dealId, client, currentUserId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [hint, setHint] = useState('');
   const [chat, setChat] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [filesMap, setFilesMap] = useState({});
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recMs, setRecMs] = useState(0);
+
   const listRef = useRef(null);
   const lastIdRef = useRef(0);
+  const fileInputRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const recTimerRef = useRef(null);
+  const recStartedRef = useRef(0);
 
   const phone = client?.phone || '';
   const waUrl = waMeUrl(phone);
   const contactId = client?.contactId || null;
+  const hasText = Boolean(text.trim());
 
   const scrollBottom = () => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   };
 
+  const applyMessages = (msgs, files, { replace = false } = {}) => {
+    if (files) setFilesMap((prev) => mergeFilesMap(replace ? {} : prev, files));
+    setMessages((prev) => {
+      if (replace) return msgs;
+      const ids = new Set(prev.map((m) => String(m.id)));
+      const add = msgs.filter((m) => !ids.has(String(m.id)));
+      if (!add.length) return prev;
+      return [...prev, ...add].sort((a, b) => Number(a.id) - Number(b.id));
+    });
+    if (msgs.length) {
+      const last = msgs[msgs.length - 1];
+      lastIdRef.current = Math.max(lastIdRef.current, Number(last.id) || 0);
+    }
+  };
+
   const loadChat = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const found = await findPersonalChatForDeal({ dealId, contactId });
+      const found = await findPersonalChatForDeal({ dealId, contactId, phone });
       setChat(found);
       if (!found) {
         setMessages([]);
+        setFilesMap({});
         return;
       }
-      const { messages: msgs } = await getDialogMessages(found.dialogId, { limit: 50 });
-      setMessages(msgs);
-      lastIdRef.current = msgs.length ? Number(msgs[msgs.length - 1].id) || 0 : 0;
+      const data = await getDialogMessages(found.dialogId, { limit: 60 });
+      lastIdRef.current = 0;
+      applyMessages(data.messages, data.files, { replace: true });
+      if (data.messages.length) {
+        lastIdRef.current = Number(data.messages[data.messages.length - 1].id) || 0;
+      }
       markDialogRead(found.dialogId);
       requestAnimationFrame(scrollBottom);
     } catch (err) {
@@ -60,7 +261,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
     } finally {
       setLoading(false);
     }
-  }, [dealId, contactId]);
+  }, [dealId, contactId, phone]);
 
   useEffect(() => {
     loadChat();
@@ -70,26 +271,29 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
     if (!chat?.dialogId) return undefined;
     const t = setInterval(async () => {
       try {
-        const { messages: msgs } = await getDialogMessages(chat.dialogId, {
-          limit: 20,
+        const data = await getDialogMessages(chat.dialogId, {
+          limit: 25,
           firstId: lastIdRef.current || 0,
         });
-        if (!msgs.length) return;
-        setMessages((prev) => {
-          const ids = new Set(prev.map((m) => String(m.id)));
-          const add = msgs.filter((m) => !ids.has(String(m.id)));
-          if (!add.length) return prev;
-          const next = [...prev, ...add].sort((a, b) => Number(a.id) - Number(b.id));
-          lastIdRef.current = Number(next[next.length - 1].id) || lastIdRef.current;
-          return next;
-        });
+        if (!data.messages.length) return;
+        applyMessages(data.messages, data.files);
         requestAnimationFrame(scrollBottom);
       } catch {
-        /* ignore poll errors */
+        /* ignore */
       }
     }, 4500);
     return () => clearInterval(t);
   }, [chat?.dialogId]);
+
+  const refreshTail = async () => {
+    if (!chat?.dialogId) return;
+    const data = await getDialogMessages(chat.dialogId, {
+      limit: 25,
+      firstId: lastIdRef.current || 0,
+    });
+    applyMessages(data.messages, data.files);
+    requestAnimationFrame(scrollBottom);
+  };
 
   const onSend = async () => {
     if (!chat?.dialogId || !text.trim() || sending) return;
@@ -101,18 +305,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
         currentUserId,
       });
       setText('');
-      const { messages: msgs } = await getDialogMessages(chat.dialogId, {
-        limit: 20,
-        firstId: lastIdRef.current || 0,
-      });
-      setMessages((prev) => {
-        const ids = new Set(prev.map((m) => String(m.id)));
-        const add = msgs.filter((m) => !ids.has(String(m.id)));
-        const next = [...prev, ...add].sort((a, b) => Number(a.id) - Number(b.id));
-        if (next.length) lastIdRef.current = Number(next[next.length - 1].id) || 0;
-        return next;
-      });
-      requestAnimationFrame(scrollBottom);
+      await refreshTail();
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -120,102 +313,299 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
     }
   };
 
-  const openCc = () => {
-    const url = contactCenterChatUrl({
-      chatId: chat?.chatId,
-      dialogId: chat?.dialogId,
+  const onAttach = async (fileList) => {
+    if (!chat?.chatId || !fileList?.length || sending) return;
+    setSending(true);
+    setError(null);
+    setHint('Загрузка файла…');
+    try {
+      const files = Array.from(fileList);
+      for (let i = 0; i < files.length; i++) {
+        setHint(`Загрузка: ${files[i].name} (${i + 1}/${files.length})…`);
+        await uploadFileToChat({
+          chatId: chat.chatId,
+          dialogId: chat.dialogId,
+          file: files[i],
+          caption: i === 0 ? text.trim() : '',
+          currentUserId,
+        });
+      }
+      setText('');
+      const data = await getDialogMessages(chat.dialogId, { limit: 60 });
+      lastIdRef.current = 0;
+      applyMessages(data.messages, data.files, { replace: true });
+      if (data.messages.length) {
+        lastIdRef.current = Number(data.messages[data.messages.length - 1].id) || 0;
+      }
+      requestAnimationFrame(scrollBottom);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setSending(false);
+      setHint('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const stopTracks = () => {
+    mediaStreamRef.current?.getTracks?.().forEach((t) => t.stop());
+    mediaStreamRef.current = null;
+  };
+
+  const clearRecTimer = () => {
+    if (recTimerRef.current) {
+      clearInterval(recTimerRef.current);
+      recTimerRef.current = null;
+    }
+  };
+
+  const cancelRecording = () => {
+    clearRecTimer();
+    try {
+      mediaRecorderRef.current?.stop?.();
+    } catch {
+      /* ignore */
+    }
+    mediaRecorderRef.current = null;
+    chunksRef.current = [];
+    stopTracks();
+    setRecording(false);
+    setRecMs(0);
+  };
+
+  const startRecording = async () => {
+    if (!chat?.dialogId || recording || sending) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Браузер не поддерживает запись (нужен HTTPS)');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      chunksRef.current = [];
+      const mime = pickMime();
+      const mr = mime
+        ? new MediaRecorder(stream, { mimeType: mime })
+        : new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      mr.ondataavailable = (e) => {
+        if (e.data?.size) chunksRef.current.push(e.data);
+      };
+      mr.start(250);
+      recStartedRef.current = Date.now();
+      setRecMs(0);
+      setRecording(true);
+      recTimerRef.current = setInterval(() => {
+        setRecMs(Date.now() - recStartedRef.current);
+      }, 250);
+    } catch {
+      setError('Нет доступа к микрофону');
+      stopTracks();
+    }
+  };
+
+  const finishRecording = async (send) => {
+    const mr = mediaRecorderRef.current;
+    if (!mr) {
+      cancelRecording();
+      return;
+    }
+    const mime = mr.mimeType || 'audio/webm';
+    await new Promise((resolve) => {
+      mr.onstop = () => resolve();
+      try {
+        mr.stop();
+      } catch {
+        resolve();
+      }
     });
-    window.open(url, '_blank', 'noopener,noreferrer');
+    clearRecTimer();
+    stopTracks();
+    setRecording(false);
+    const blob = new Blob(chunksRef.current, { type: mime });
+    chunksRef.current = [];
+    mediaRecorderRef.current = null;
+    setRecMs(0);
+
+    if (!send || blob.size < 800 || !chat?.chatId) return;
+
+    setSending(true);
+    setHint('Подготовка голосового…');
+    try {
+      let file;
+      try {
+        if (/ogg|opus/i.test(mime)) {
+          const uid = `${Date.now()}`;
+          file = new File([blob], `voice_${uid}.ogg`, { type: 'audio/ogg' });
+        } else {
+          file = await convertToOgg(blob, mime, setHint);
+        }
+      } catch {
+        setHint('Конвертер недоступен, отправка как есть…');
+        const uid = `${Date.now()}`;
+        file = new File([blob], `voice_${uid}.webm`, { type: mime || 'audio/webm' });
+      }
+      setHint('Отправка голосового…');
+      await uploadFileToChat({
+        chatId: chat.chatId,
+        dialogId: chat.dialogId,
+        file,
+        currentUserId,
+      });
+      const data = await getDialogMessages(chat.dialogId, { limit: 60 });
+      lastIdRef.current = 0;
+      applyMessages(data.messages, data.files, { replace: true });
+      if (data.messages.length) {
+        lastIdRef.current = Number(data.messages[data.messages.length - 1].id) || 0;
+      }
+      requestAnimationFrame(scrollBottom);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setSending(false);
+      setHint('');
+    }
+  };
+
+  const openCc = () => {
+    window.open(
+      contactCenterChatUrl({ chatId: chat?.chatId, dialogId: chat?.dialogId }),
+      '_blank',
+      'noopener,noreferrer'
+    );
+  };
+
+  const formatRec = (ms) => {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
 
   return (
-    <div className="client-chat">
-      <div className="client-chat-head">
-        <div>
-          <div className="client-chat-title">Чат с клиентом</div>
-          <div className="client-chat-sub">
-            {client?.fullName || 'Клиент'}
-            {phone ? ` · ${phone}` : ''}
+    <div className="wa-panel">
+      <div className="wa-panel-head">
+        <div className="wa-panel-head-info">
+          <div className="wa-panel-title">{client?.fullName || 'Клиент'}</div>
+          <div className="wa-panel-sub">
+            {phone || 'нет телефона'}
+            {chat?.isClosed ? ' · сессия закрыта' : ''}
           </div>
         </div>
-        <div className="client-chat-actions">
-          <button type="button" className="btn btn-secondary" onClick={loadChat} disabled={loading}>
-            Обновить
+        <div className="wa-panel-head-actions">
+          <button type="button" className="wa-mini-btn" onClick={loadChat} disabled={loading}>
+            ↻
           </button>
-          <button type="button" className="btn btn-secondary" onClick={openCc}>
-            Открыть в КЦ
+          <button type="button" className="wa-mini-btn" onClick={openCc} title="Открыть в КЦ">
+            КЦ
           </button>
         </div>
       </div>
 
-      {error && <div className="errors" style={{ margin: '0 0 12px' }}>{error}</div>}
+      {error ? <div className="wa-panel-error">{error}</div> : null}
+      {hint ? <div className="wa-panel-hint">{hint}</div> : null}
 
       {loading ? (
-        <p className="muted">Ищем диалог WhatsApp…</p>
+        <div className="wa-panel-empty">Ищем WhatsApp…</div>
       ) : !chat ? (
-        <div className="client-chat-empty">
-          <p>Личного чата Open Lines с этим клиентом не найдено.</p>
+        <div className="wa-panel-empty">
+          <p>Личный чат Open Lines не найден (или линия устарела).</p>
           {waUrl ? (
             <a className="btn btn-primary" href={waUrl} target="_blank" rel="noreferrer">
               Написать в WhatsApp
             </a>
           ) : (
-            <p className="muted">У контакта нет телефона — добавьте номер в CRM.</p>
+            <p className="muted">Добавьте телефон в CRM.</p>
           )}
         </div>
       ) : (
         <>
-          <div className="client-chat-meta muted">
-            {chat.title}
-            {chat.isClosed ? ' · сессия была закрыта (при отправке откроем снова)' : ''}
-          </div>
-          <div className="client-chat-list" ref={listRef}>
-            {messages.length === 0 ? (
-              <div className="muted" style={{ textAlign: 'center', padding: 16 }}>
-                Нет сообщений
-              </div>
+          <div className="wa-messages" ref={listRef}>
+            {messages.filter(shouldRenderMessage).length === 0 ? (
+              <div className="wa-panel-empty soft">Нет сообщений</div>
             ) : (
-              messages.map((msg) => {
-                const system = isSystemMessage(msg);
-                const out = !system && isOutgoingMessage(msg, currentUserId);
-                const body = stripBbLite(msg.text) || (msg.params?.FILE_ID ? '📎 Файл' : '');
-                return (
-                  <div
-                    key={msg.id}
-                    className={`client-chat-msg ${system ? 'is-system' : out ? 'is-out' : 'is-in'}`}
-                  >
-                    <div className="client-chat-msg-text">{body || '—'}</div>
-                    <div className="client-chat-msg-time">
-                      {formatMessageTime(msg.date || msg.DATE)}
-                    </div>
-                  </div>
-                );
-              })
+              messages.map((msg) => (
+                <MessageBubble
+                  key={msg.id}
+                  msg={msg}
+                  currentUserId={currentUserId}
+                  filesMap={filesMap}
+                  dialogId={chat.dialogId}
+                />
+              ))
             )}
           </div>
-          <div className="client-chat-compose">
-            <textarea
-              rows={2}
-              value={text}
-              placeholder="Сообщение клиенту…"
-              disabled={sending}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  onSend();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={sending || !text.trim()}
-              onClick={onSend}
-            >
-              {sending ? '…' : 'Отправить'}
-            </button>
-          </div>
+
+          {recording ? (
+            <div className="wa-rec-bar">
+              <span className="wa-rec-dot" />
+              <span className="wa-rec-timer">{formatRec(recMs)}</span>
+              <div className="wa-rec-wave" />
+              <button type="button" className="wa-rec-cancel" onClick={cancelRecording}>
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="wa-send-btn"
+                onClick={() => finishRecording(true)}
+                title="Отправить"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                  <path d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817-.011 7.912z" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <div className="wa-compose">
+              <button
+                type="button"
+                className="wa-icon-btn"
+                title="Прикрепить"
+                disabled={sending}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                  <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z" />
+                </svg>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.zip,.rar,.txt"
+                onChange={(e) => onAttach(e.target.files)}
+              />
+              <textarea
+                rows={1}
+                value={text}
+                placeholder="Сообщение…"
+                disabled={sending}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    onSend();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className={`wa-send-btn ${hasText ? '' : 'mic'}`}
+                disabled={sending}
+                title={hasText ? 'Отправить' : 'Голосовое'}
+                onClick={() => (hasText ? onSend() : startRecording())}
+              >
+                {hasText ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                    <path d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817-.011 7.912z" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15a.998.998 0 0 0-.98-.85c-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
