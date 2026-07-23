@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { contactCenterChatUrl } from '../config/contactCenter.js';
+import { openContactCenter } from '../config/contactCenter.js';
 import {
   contactCenterOriginBase,
   findPersonalChatForDeal,
@@ -267,36 +267,6 @@ function ImageLightbox({ src, alt, onClose }) {
   );
 }
 
-function ContactCenterModal({ url, onClose }) {
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
-    };
-  }, [onClose]);
-
-  return (
-    <div className="wa-cc-modal" role="dialog" aria-modal="true">
-      <div className="wa-cc-modal-backdrop" onClick={onClose} />
-      <div className="wa-cc-modal-panel">
-        <div className="wa-cc-modal-bar">
-          <span className="wa-cc-modal-title">Контакт-центр</span>
-          <button type="button" className="wa-mini-btn" onClick={onClose}>
-            Закрыть
-          </button>
-        </div>
-        <iframe className="wa-cc-frame" src={url} title="Контакт-центр" />
-      </div>
-    </div>
-  );
-}
-
 export function ClientChatPanel({ dealId, client, currentUserId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -309,7 +279,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
   const [recording, setRecording] = useState(false);
   const [recMs, setRecMs] = useState(0);
   const [lightbox, setLightbox] = useState({ src: '', alt: '' });
-  const [ccOpen, setCcOpen] = useState(false);
+
 
   const listRef = useRef(null);
   const lastIdRef = useRef(0);
@@ -586,11 +556,12 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
     }
   };
 
-  const openCc = () => setCcOpen(true);
+  const openCc = () => {
+    openContactCenter({ chatId: chat?.chatId, dialogId: chat?.dialogId });
+  };
 
   const openImage = (src, alt) => setLightbox({ src, alt: alt || '' });
   const closeLightbox = () => setLightbox({ src: '', alt: '' });
-  const ccUrl = contactCenterChatUrl({ chatId: chat?.chatId, dialogId: chat?.dialogId });
 
   const formatRec = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -729,12 +700,6 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
       {lightbox.src
         ? createPortal(
             <ImageLightbox src={lightbox.src} alt={lightbox.alt} onClose={closeLightbox} />,
-            document.body
-          )
-        : null}
-      {ccOpen
-        ? createPortal(
-            <ContactCenterModal url={ccUrl} onClose={() => setCcOpen(false)} />,
             document.body
           )
         : null}
