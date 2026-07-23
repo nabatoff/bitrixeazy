@@ -274,7 +274,8 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
         и привязку отделов. Конфиг хранится в <code>BX24.appOption</code> (ключ deal_widget_config).
       </p>
       <p className="muted">
-        Чат с клиентом: в правах локального приложения нужны скоупы <b>im</b> и <b>imopenlines</b>
+        Чат с клиентом: в правах локального приложения нужны скоупы <b>im</b>, <b>imopenlines</b> и{' '}
+        <b>disk</b> (файлы/голосовые)
         (кроме crm / user / placement). КЦ:{' '}
         <a href="https://crm.artflowers.kz/local/custom_chat/" target="_blank" rel="noreferrer">
           /local/custom_chat/

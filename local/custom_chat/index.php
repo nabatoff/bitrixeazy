@@ -43,6 +43,21 @@ if (!empty($_GET['wa_ffmpeg'])) {
 require($_SERVER["DOCUMENT_ROOT"]."/bitrix/header.php");
 $APPLICATION->SetTitle("Контакт-центр (WhatsApp Web UI)");
 
+// Разрешить встраивание КЦ в iframe виджета (модалка BitrixEasy)
+if (class_exists('\\Bitrix\\Main\\Context')) {
+	try {
+		$resp = \Bitrix\Main\Context::getCurrent()->getResponse();
+		$headers = $resp->getHeaders();
+		$headers->delete('X-Frame-Options');
+		$headers->set(
+			'Content-Security-Policy',
+			"frame-ancestors 'self' https://crm.artflowers.kz https://bitrixeazy.vercel.app https://*.vercel.app"
+		);
+	} catch (\Throwable $e) {
+		/* ignore */
+	}
+}
+
 CJSCore::Init(['rest', 'pull']);
 
 global $USER;

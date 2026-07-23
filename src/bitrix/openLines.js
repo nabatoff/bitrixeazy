@@ -1,4 +1,4 @@
-import { bx24Call } from './bx24.js';
+import { bx24Call, getAuth } from './bx24.js';
 import { CONTACT_CENTER_URL } from '../config/contactCenter.js';
 
 const CLOSED_LINE_STATUSES = [50, 60, 70, 80];
@@ -73,9 +73,9 @@ async function getChatsForCrmEntity(entityType, entityId, activeOnly) {
       ACTIVE_ONLY: activeOnly ? 'Y' : 'N',
     });
     const list = data?.result || data || [];
-    if (Array.isArray(list) && list.length) return list;
+    if (Array.isArray(list)) return list;
   } catch {
-    /* fall through */
+    /* fall through to getLastId only if list API недоступен */
   }
 
   if (activeOnly) return [];
@@ -88,7 +88,7 @@ async function getChatsForCrmEntity(entityType, entityId, activeOnly) {
     const cid = parseInt(last?.result !== undefined ? last.result : last, 10);
     if (cid) return [{ CHAT_ID: cid }];
   } catch {
-    /* ignore */
+    /* 400 = чата нет / метод ругается — не критично */
   }
   return [];
 }
@@ -279,26 +279,75 @@ function fileToBase64(file) {
 export async function uploadFileToChat({ chatId, dialogId, file, caption = '', currentUserId }) {
   const cid = parseInt(chatId, 10);
   if (!cid) throw new Error('CHAT_ID не определён');
-  await ensureOpenLineSession(cid, currentUserId);
+  if (!file) throw new Error('Файл не выбран');
 
+  try {
+    await ensureOpenLineSession(cid, currentUserId);
+  } catch {
+    /* operator.answer часто 400 если ты не оператор OL — текст/файл всё равно пробуем */
+  }
+
+  const content = await fileToBase64(file);
+  const dialog = dialogId || `chat${cid}`;
+  const uploadOpts = { timeoutMs: 120000 };
+
+  // 1) im.v2 — достаточно скоупа im (как в PHP КЦ для голосовых)
+  try {
+    return await bx24Call(
+      'im.v2.File.upload',
+      {
+        dialogId: dialog,
+        fields: {
+          name: file.name || 'file.bin',
+          content,
+          message: caption || '',
+        },
+      },
+      uploadOpts
+    );
+  } catch (e1) {
+    console.warn('im.v2.File.upload failed, try disk', e1);
+  }
+
+  // 2) disk + commit — нужен скоуп disk
   let folderId = null;
   try {
     const folder = await bx24Call('im.disk.folder.get', { CHAT_ID: cid });
     folderId = folder.ID || folder.id;
   } catch {
-    const folder = await bx24Call('im.disk.folder.get', {
-      DIALOG_ID: dialogId || `chat${cid}`,
-    });
-    folderId = folder.ID || folder.id;
+    try {
+      const folder = await bx24Call('im.disk.folder.get', { DIALOG_ID: dialog });
+      folderId = folder.ID || folder.id;
+    } catch (e) {
+      throw new Error(
+        'Не удалось загрузить файл. Добавь скоупы im + disk в локальном приложении и переоткрой виджет. ' +
+          (e.message || '')
+      );
+    }
   }
   if (!folderId) throw new Error('Не удалось получить папку чата');
 
-  const content = await fileToBase64(file);
-  const uploaded = await bx24Call('disk.folder.uploadfile', {
-    id: folderId,
-    data: { NAME: file.name },
-    fileContent: [file.name, content],
-  });
+  let uploaded;
+  try {
+    uploaded = await bx24Call(
+      'disk.folder.uploadfile',
+      {
+        id: folderId,
+        data: { NAME: file.name || 'file.bin' },
+        fileContent: [file.name || 'file.bin', content],
+      },
+      uploadOpts
+    );
+  } catch (e) {
+    const msg = e.message || String(e);
+    if (/401|unauthorized|insufficient_scope|ACCESS_DENIED|permission/i.test(msg)) {
+      throw new Error(
+        'Нет прав на disk.folder.uploadfile (401). В карточке локального приложения добавь скоуп disk, сохрани права и переоткрой сделку.'
+      );
+    }
+    throw e;
+  }
+
   const fileId =
     uploaded.ID || uploaded.id || (uploaded.result && (uploaded.result.ID || uploaded.result.id));
   if (!fileId) throw new Error('Файл не загружен на диск');
@@ -310,12 +359,72 @@ export async function uploadFileToChat({ chatId, dialogId, file, caption = '', c
   });
 }
 
+export function portalOrigin() {
+  const auth = getAuth();
+  const domain = String(auth?.domain || 'crm.artflowers.kz').replace(/^https?:\/\//, '');
+  return `https://${domain}`;
+}
+
+/** Bitrix часто отдаёт относительные /bitrix/... — в виджете на Vercel они ломаются */
+export function absolutizeBitrixUrl(url) {
+  if (!url) return '';
+  const s = String(url).trim();
+  if (!s || s.startsWith('blob:') || s.startsWith('data:')) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith('//')) return `https:${s}`;
+  const origin = portalOrigin();
+  return s.startsWith('/') ? origin + s : `${origin}/${s}`;
+}
+
 export async function downloadFileUrl(dialogId, fileId) {
   const data = await bx24Call('im.v2.File.download', {
     dialogId,
     fileId: parseInt(fileId, 10),
   });
-  return data?.downloadUrl || '';
+  return absolutizeBitrixUrl(data?.downloadUrl || '');
+}
+
+/**
+ * Надёжный src для img/audio/video: download API → абсолютные URL → blob (если CORS пускает).
+ */
+export async function resolveMediaSrc(dialogId, fileId, file = null) {
+  let url = '';
+  try {
+    url = await downloadFileUrl(dialogId, fileId);
+  } catch {
+    /* ignore */
+  }
+  if (!url) {
+    url =
+      absolutizeBitrixUrl(file?.urlDownload) ||
+      absolutizeBitrixUrl(file?.urlShow) ||
+      absolutizeBitrixUrl(file?.urlPreview);
+  }
+  if (!url) return { src: '', blobUrl: '' };
+
+  try {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob && blob.size > 0 && !/text\/html/i.test(blob.type)) {
+        return { src: URL.createObjectURL(blob), blobUrl: true, contentType: blob.type };
+      }
+    }
+  } catch {
+    /* CORS — используем прямой URL */
+  }
+  return { src: url, blobUrl: false, contentType: '' };
+}
+
+export function guessMediaKind(file, contentType = '') {
+  if (isImageFile(file) || /^image\//i.test(contentType)) return 'image';
+  if (isAudioFile(file) || /^audio\//i.test(contentType)) return 'audio';
+  if (isVideoFile(file) || /^video\//i.test(contentType)) return 'video';
+  const name = `${file?.name || ''}.${file?.extension || ''}`.toLowerCase();
+  if (/\.(jpe?g|png|gif|webp|bmp|heic)(\?|$)/i.test(name)) return 'image';
+  if (/\.(mp3|ogg|oga|wav|m4a|opus|aac|webm)(\?|$)/i.test(name)) return 'audio';
+  if (/\.(mp4|mov|avi|mkv)(\?|$)/i.test(name)) return 'video';
+  return 'file';
 }
 
 export function normalizeFileRecord(raw, key) {
@@ -326,14 +435,17 @@ export function normalizeFileRecord(raw, key) {
   const ext = String(raw.extension || raw.EXTENSION || name.split('.').pop() || '').toLowerCase();
   let type = String(raw.type || raw.TYPE || raw.mediaType || '').toLowerCase();
   if (!type && /^(jpe?g|png|gif|webp|bmp|heic)$/i.test(ext)) type = 'image';
+  if (!type && /^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(ext)) type = 'audio';
+  if (!type && /^(mp4|mov|avi|mkv)$/i.test(ext)) type = 'video';
+  if ((!type || type === 'file') && /voice|audio_message|голос/i.test(name)) type = 'audio';
   return {
     id,
     name,
     extension: ext,
     type,
-    urlPreview: raw.urlPreview || raw.previewUrl || '',
-    urlShow: raw.urlShow || raw.showUrl || raw.url || '',
-    urlDownload: raw.urlDownload || raw.downloadUrl || raw.src || '',
+    urlPreview: absolutizeBitrixUrl(raw.urlPreview || raw.previewUrl || ''),
+    urlShow: absolutizeBitrixUrl(raw.urlShow || raw.showUrl || raw.url || ''),
+    urlDownload: absolutizeBitrixUrl(raw.urlDownload || raw.downloadUrl || raw.src || ''),
   };
 }
 

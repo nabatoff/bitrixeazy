@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { openContactCenter } from '../config/contactCenter.js';
+import { createPortal } from 'react-dom';
+import { contactCenterChatUrl } from '../config/contactCenter.js';
 import {
   contactCenterOriginBase,
-  downloadFileUrl,
   findPersonalChatForDeal,
   formatMessageTime,
   getDialogMessages,
   getFileIds,
-  isAudioFile,
-  isImageFile,
+  guessMediaKind,
   isOutgoingMessage,
   isSystemMessage,
-  isVideoFile,
   markDialogRead,
   mergeFilesMap,
   messagePlainText,
+  resolveMediaSrc,
   sendDialogMessage,
   shouldRenderMessage,
   systemMessageLabel,
@@ -105,28 +104,45 @@ function pickMime() {
   return '';
 }
 
-function ChatMedia({ fileId, file, dialogId }) {
-  const [src, setSrc] = useState(
-    () => file?.urlPreview || file?.urlShow || file?.urlDownload || ''
-  );
+function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
+  const [src, setSrc] = useState('');
+  const [kind, setKind] = useState(() => guessMediaKind(file));
   const [err, setErr] = useState(false);
+  const blobRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (src) return;
+      setErr(false);
       try {
-        const url = await downloadFileUrl(dialogId, fileId);
-        if (!cancelled && url) setSrc(url);
-        else if (!cancelled) setErr(true);
+        const resolved = await resolveMediaSrc(dialogId, fileId, file);
+        if (cancelled) {
+          if (resolved.blobUrl && resolved.src) URL.revokeObjectURL(resolved.src);
+          return;
+        }
+        if (blobRef.current) {
+          URL.revokeObjectURL(blobRef.current);
+          blobRef.current = '';
+        }
+        if (!resolved.src) {
+          setErr(true);
+          return;
+        }
+        if (resolved.blobUrl) blobRef.current = resolved.src;
+        setSrc(resolved.src);
+        setKind(guessMediaKind(file, resolved.contentType || ''));
       } catch {
         if (!cancelled) setErr(true);
       }
     })();
     return () => {
       cancelled = true;
+      if (blobRef.current) {
+        URL.revokeObjectURL(blobRef.current);
+        blobRef.current = '';
+      }
     };
-  }, [dialogId, fileId, src]);
+  }, [dialogId, fileId, file?.name, file?.extension, file?.type, file?.urlDownload, file?.urlShow]);
 
   if (err) {
     return <div className="wa-media-fallback">Не удалось загрузить файл</div>;
@@ -135,21 +151,30 @@ function ChatMedia({ fileId, file, dialogId }) {
     return <div className="wa-media-fallback">Загрузка…</div>;
   }
 
-  if (isImageFile(file) || (!file && /\.(jpe?g|png|gif|webp)(\?|$)/i.test(src))) {
+  if (kind === 'image') {
     return (
-      <a className="wa-media" href={src} target="_blank" rel="noreferrer">
-        <img src={src} alt={file?.name || ''} loading="lazy" />
-      </a>
+      <button
+        type="button"
+        className="wa-media wa-media-img-btn"
+        onClick={() => onOpenImage?.(src, file?.name)}
+      >
+        <img
+          src={src}
+          alt={file?.name || ''}
+          loading="lazy"
+          onError={() => setErr(true)}
+        />
+      </button>
     );
   }
-  if (isAudioFile(file)) {
+  if (kind === 'audio') {
     return (
       <div className="wa-media">
         <audio controls preload="metadata" src={src} className="wa-voice" />
       </div>
     );
   }
-  if (isVideoFile(file)) {
+  if (kind === 'video') {
     return (
       <div className="wa-media">
         <video controls preload="metadata" src={src} />
@@ -157,13 +182,13 @@ function ChatMedia({ fileId, file, dialogId }) {
     );
   }
   return (
-    <a className="wa-file-link" href={src} target="_blank" rel="noreferrer">
+    <a className="wa-file-link" href={src} download={file?.name || true}>
       📎 {file?.name || `Файл #${fileId}`}
     </a>
   );
 }
 
-function MessageBubble({ msg, currentUserId, filesMap, dialogId }) {
+function MessageBubble({ msg, currentUserId, filesMap, dialogId, onOpenImage }) {
   if (!shouldRenderMessage(msg)) return null;
 
   const system = isSystemMessage(msg);
@@ -174,10 +199,76 @@ function MessageBubble({ msg, currentUserId, filesMap, dialogId }) {
   return (
     <div className={`wa-msg ${system ? 'system' : out ? 'out' : 'in'}`}>
       {fileIds.map((id) => (
-        <ChatMedia key={id} fileId={id} file={filesMap[id]} dialogId={dialogId} />
+        <ChatMedia
+          key={id}
+          fileId={id}
+          file={filesMap[id]}
+          dialogId={dialogId}
+          onOpenImage={onOpenImage}
+        />
       ))}
       {plain ? <span className="wa-msg-text">{plain}</span> : null}
       <span className="wa-msg-time">{formatMessageTime(msg.date || msg.DATE)}</span>
+    </div>
+  );
+}
+
+function ImageLightbox({ src, alt, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  if (!src) return null;
+  return (
+    <div className="wa-lightbox" role="dialog" aria-modal="true" onClick={onClose}>
+      <button type="button" className="wa-lightbox-close" onClick={onClose} aria-label="Закрыть">
+        ×
+      </button>
+      <img
+        src={src}
+        alt={alt || ''}
+        className="wa-lightbox-img"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  );
+}
+
+function ContactCenterModal({ url, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="wa-cc-modal" role="dialog" aria-modal="true">
+      <div className="wa-cc-modal-backdrop" onClick={onClose} />
+      <div className="wa-cc-modal-panel">
+        <div className="wa-cc-modal-bar">
+          <span className="wa-cc-modal-title">Контакт-центр</span>
+          <button type="button" className="wa-mini-btn" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+        <iframe className="wa-cc-frame" src={url} title="Контакт-центр" />
+      </div>
     </div>
   );
 }
@@ -193,6 +284,8 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recMs, setRecMs] = useState(0);
+  const [lightbox, setLightbox] = useState({ src: '', alt: '' });
+  const [ccOpen, setCcOpen] = useState(false);
 
   const listRef = useRef(null);
   const lastIdRef = useRef(0);
@@ -251,7 +344,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
       const msg = err.message || String(err);
       if (/insufficient_scope|ACCESS_DENIED|permission/i.test(msg)) {
         setError(
-          'Нет прав на чат. В локальном приложении добавь скоупы im и imopenlines, переоткрой виджет.'
+          'Нет прав на чат/файлы. В локальном приложении добавь скоупы im, imopenlines и disk, переоткрой виджет.'
         );
       } else {
         setError(msg);
@@ -399,7 +492,9 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
         setRecMs(Date.now() - recStartedRef.current);
       }, 250);
     } catch {
-      setError('Нет доступа к микрофону');
+      setError(
+        'Нет доступа к микрофону. В iframe Битрикса запись часто блокируется — открой КЦ (кнопка) или разреши микрофон для сайта. Файлы: нужен скоуп disk.'
+      );
       stopTracks();
     }
   };
@@ -467,9 +562,11 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
     }
   };
 
-  const openCc = () => {
-    openContactCenter({ chatId: chat?.chatId, dialogId: chat?.dialogId });
-  };
+  const openCc = () => setCcOpen(true);
+
+  const openImage = (src, alt) => setLightbox({ src, alt: alt || '' });
+  const closeLightbox = () => setLightbox({ src: '', alt: '' });
+  const ccUrl = contactCenterChatUrl({ chatId: chat?.chatId, dialogId: chat?.dialogId });
 
   const formatRec = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -489,9 +586,6 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
           </div>
         </div>
         <div className="wa-panel-head-actions">
-          <button type="button" className="wa-mini-btn" onClick={loadChat} disabled={loading}>
-            ↻
-          </button>
           <button type="button" className="wa-mini-btn" onClick={openCc} title="Открыть в КЦ">
             КЦ
           </button>
@@ -527,6 +621,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
                   currentUserId={currentUserId}
                   filesMap={filesMap}
                   dialogId={chat.dialogId}
+                  onOpenImage={openImage}
                 />
               ))
             )}
@@ -606,6 +701,19 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
           )}
         </>
       )}
+
+      {lightbox.src
+        ? createPortal(
+            <ImageLightbox src={lightbox.src} alt={lightbox.alt} onClose={closeLightbox} />,
+            document.body
+          )
+        : null}
+      {ccOpen
+        ? createPortal(
+            <ContactCenterModal url={ccUrl} onClose={() => setCcOpen(false)} />,
+            document.body
+          )
+        : null}
     </div>
   );
 }

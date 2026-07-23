@@ -64,7 +64,8 @@ export function refreshAuth() {
   });
 }
 
-export function bx24Call(method, params = {}) {
+export function bx24Call(method, params = {}, options = {}) {
+  const timeoutMs = options.timeoutMs || 15000;
   return withTimeout(
     new Promise((resolve, reject) => {
       getBX24().callMethod(method, params, (result) => {
@@ -75,7 +76,7 @@ export function bx24Call(method, params = {}) {
         resolve(result.data());
       });
     }),
-    15000,
+    timeoutMs,
     method
   );
 }
