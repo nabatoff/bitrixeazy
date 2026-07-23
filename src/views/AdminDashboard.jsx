@@ -32,9 +32,9 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
 
   const funnel = draft.funnels[selectedFunnel] || {
     name: '',
-    departments: { manager: [], accountant: [], purchaser: [] },
+    departments: { manager: [], accountant: [], purchaser: [], director: [], storekeeper: [] },
     lockFields: { accountant: '', purchaser: '' },
-    fields: { accountant: [], purchaser: [], manager: [] },
+    fields: { accountant: [], purchaser: [], manager: [], director: [], storekeeper: [] },
   };
 
   const updateFunnel = (patch) => {
@@ -69,7 +69,13 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
         ...prev.funnels,
         [key]: {
           name: `Воронка ${key}`,
-          departments: { manager: [], accountant: [], purchaser: [] },
+          departments: {
+            manager: [],
+            accountant: [],
+            purchaser: [],
+            director: [],
+            storekeeper: [],
+          },
           lockFields: {
             accountant: 'UF_CRM_LOCK_ACCOUNTANT',
             purchaser: 'UF_CRM_LOCK_PURCHASER',
@@ -196,6 +202,28 @@ export function AdminDashboard({ config, onSave, saving, onClose }) {
             value={idsToText(funnel.departments?.purchaser)}
             onChange={(e) =>
               updateFunnel({ departments: { purchaser: parseIdList(e.target.value) } })
+            }
+          />
+        </label>
+
+        <label>
+          Отделы руководителей (ID)
+          <input
+            type="text"
+            value={idsToText(funnel.departments?.director)}
+            onChange={(e) =>
+              updateFunnel({ departments: { director: parseIdList(e.target.value) } })
+            }
+          />
+        </label>
+
+        <label>
+          Отделы кладовщиков (ID)
+          <input
+            type="text"
+            value={idsToText(funnel.departments?.storekeeper)}
+            onChange={(e) =>
+              updateFunnel({ departments: { storekeeper: parseIdList(e.target.value) } })
             }
           />
         </label>

@@ -1,1 +1,1 @@
-export { AccountantView, PurchaserView, ManagerView } from './RoleScreen.jsx';
+export { AccountantView, DirectorView, ManagerView, PurchaserView, StorekeeperView } from './RoleScreen.jsx';

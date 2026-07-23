@@ -8,6 +8,34 @@ export async function updateDeal(dealId, fields) {
   return bx24Call('crm.deal.update', { id: dealId, fields });
 }
 
+/** Read File → base64 payload for Bitrix UF file field */
+export function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Upload file into CRM deal UF file field (fileData format).
+ * @returns updated field value from reloaded deal (caller should reload)
+ */
+export async function uploadDealFile(dealId, fieldCode, file) {
+  const base64 = await fileToBase64(file);
+  await updateDeal(dealId, {
+    [fieldCode]: {
+      fileData: [file.name || 'file.bin', base64],
+    },
+  });
+  return true;
+}
+
 export async function getUser(userId) {
   if (!userId) return null;
   const list = await bx24Call('user.get', { ID: userId });

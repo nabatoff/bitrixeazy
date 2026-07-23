@@ -1,13 +1,4 @@
-function isTruthyBool(v) {
-  return v === true || v === 'Y' || v === '1' || v === 1;
-}
-
-function isFilled(v) {
-  if (v == null) return false;
-  if (typeof v === 'string') return v.trim() !== '';
-  if (Array.isArray(v)) return v.length > 0;
-  return true;
-}
+import { isFilled, isTruthyBool } from '../deal/fieldHelpers.js';
 
 /**
  * Client-side either/or (+ conditional) validation before save.
@@ -31,7 +22,11 @@ export function validateEitherOr(values, role) {
   }
 
   if (role === 'purchaser' || role === 'manager') {
-    const purchaseStatus = String(values.UF_CRM_1783486791226 || '');
+    const purchaseStatus = String(
+      Array.isArray(values.UF_CRM_1783486791226)
+        ? values.UF_CRM_1783486791226[0]
+        : values.UF_CRM_1783486791226 || ''
+    );
     if (purchaseStatus === '911' && !isFilled(values.UF_CRM_1783487251339)) {
       errors.push('При закупке с изменениями укажите комментарий');
     }

@@ -4,6 +4,7 @@ export const FIELD_META = {
   ASSIGNED_BY_ID: { type: 'user', title: 'Ответственный', narrow: true },
   OPPORTUNITY: { type: 'double', title: 'Сумма', narrow: true },
   CURRENCY_ID: { type: 'crm_currency', title: 'Валюта', narrow: true },
+  STAGE_ID: { type: 'string', title: 'Стадия', narrow: true },
   CONTACT_ID: { type: 'crm_contact', title: 'Контакт' },
   COMPANY_ID: { type: 'crm_company', title: 'Компания' },
   CLIENT: { type: 'client', title: 'Клиент' },
@@ -102,6 +103,8 @@ const S = {
   purchaserView: 'Закуп — только просмотр',
   accountantEdit: 'Бухгалтерия — редактирование',
   purchaserEdit: 'Закуп — редактирование',
+  directorEdit: 'Решение руководителя',
+  storeEdit: 'Выдача',
 };
 
 /** Менеджер: шапка → свои edit → бухгалтерия view → закуп view */
@@ -133,6 +136,7 @@ const managerFields = [
   { code: 'UF_CRM_1784524115744', mode: 'view', section: S.purchaserView },
 ];
 
+/** Базовый список — task-UI режет до текущей фазы */
 const accountantFields = [
   { code: 'ID', mode: 'view', section: S.deal },
   { code: 'ASSIGNED_BY_ID', mode: 'view', section: S.deal },
@@ -140,11 +144,9 @@ const accountantFields = [
   { code: 'OPPORTUNITY', mode: 'view', section: S.deal },
   { code: 'UF_CRM_1782797821314', mode: 'view', section: S.deal },
   { code: 'UF_CRM_1782798174634', mode: 'view', section: S.deal },
-
   { code: 'UF_CRM_1784532842739', mode: 'edit', section: S.accountantEdit },
   { code: 'UF_CRM_1764676465', mode: 'edit', section: S.accountantEdit },
   { code: 'UF_CRM_1764577842986', mode: 'edit', section: S.accountantEdit },
-  { code: 'UF_CRM_1764577872449', mode: 'edit', section: S.accountantEdit },
   { code: 'UF_CRM_1784636341021', mode: 'edit', section: S.accountantEdit },
   { code: 'UF_CRM_1764332847245', mode: 'edit', section: S.accountantEdit },
 ];
@@ -158,17 +160,34 @@ const purchaserFields = [
   { code: 'UF_CRM_1782797821314', mode: 'view', section: S.deal },
   { code: 'UF_CRM_1782798174634', mode: 'view', section: S.deal },
   { code: 'UF_CRM_1731673902240', mode: 'view', section: S.deal },
-
   { code: 'UF_CRM_1783485774093', mode: 'edit', section: S.purchaserEdit },
   { code: 'UF_CRM_1750940585581', mode: 'edit', section: S.purchaserEdit },
   { code: 'UF_CRM_1783486791226', mode: 'edit', section: S.purchaserEdit },
   { code: 'UF_CRM_1783487251339', mode: 'edit', section: S.purchaserEdit },
 ];
 
+const directorFields = [
+  { code: 'CLIENT', mode: 'view', section: S.deal },
+  { code: 'OPPORTUNITY', mode: 'view', section: S.deal },
+  { code: 'ASSIGNED_BY_ID', mode: 'view', section: S.deal },
+  { code: 'UF_CRM_1782797821314', mode: 'view', section: S.deal },
+  { code: 'UF_CRM_1764332899326', mode: 'edit', section: S.directorEdit },
+  { code: 'UF_CRM_1764577872449', mode: 'edit', section: S.directorEdit },
+];
+
+const storekeeperFields = [
+  { code: 'CLIENT', mode: 'view', section: S.deal },
+  { code: 'OPPORTUNITY', mode: 'view', section: S.deal },
+  { code: 'UF_CRM_1782797821314', mode: 'view', section: S.deal },
+  { code: 'UF_CRM_1731673902240', mode: 'view', section: S.deal },
+  { code: 'UF_CRM_1750940585581', mode: 'view', section: S.deal },
+  { code: 'UF_CRM_1784524115744', mode: 'edit', section: S.storeEdit },
+];
+
 export const CONFIG_KEY = 'deal_widget_config';
 
 export const defaultConfig = {
-  version: 2,
+  version: 3,
   adminUserIds: [],
   funnels: {
     '15': {
@@ -177,6 +196,8 @@ export const defaultConfig = {
         manager: [154],
         accountant: [154],
         purchaser: [154],
+        director: [],
+        storekeeper: [],
       },
       lockFields: {
         accountant: 'UF_CRM_LOCK_ACCOUNTANT',
@@ -186,6 +207,8 @@ export const defaultConfig = {
         accountant: accountantFields,
         purchaser: purchaserFields,
         manager: managerFields,
+        director: directorFields,
+        storekeeper: storekeeperFields,
       },
     },
   },
@@ -204,7 +227,13 @@ export function mergeConfig(stored) {
   for (const id of funnelIds) {
     const d = base.funnels[id] || {
       name: `Воронка ${id}`,
-      departments: { manager: [], accountant: [], purchaser: [] },
+      departments: {
+        manager: [],
+        accountant: [],
+        purchaser: [],
+        director: [],
+        storekeeper: [],
+      },
       lockFields: {
         accountant: 'UF_CRM_LOCK_ACCOUNTANT',
         purchaser: 'UF_CRM_LOCK_PURCHASER',
@@ -215,9 +244,16 @@ export function mergeConfig(stored) {
     funnels[id] = {
       ...d,
       name: s.name || d.name,
-      departments: s.departments || d.departments,
+      departments: {
+        manager: [],
+        accountant: [],
+        purchaser: [],
+        director: [],
+        storekeeper: [],
+        ...d.departments,
+        ...(s.departments || {}),
+      },
       lockFields: { ...d.lockFields, ...(s.lockFields || {}) },
-      // раскладка полей всегда из кода
       fields: d.fields,
     };
   }

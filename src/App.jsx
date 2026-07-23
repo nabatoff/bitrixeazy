@@ -1,13 +1,17 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { AccessDenied } from './components/AccessDenied.jsx';
 import { useAppConfig } from './hooks/useAppConfig.js';
 import { useBx24Init } from './hooks/useBx24Init.js';
 import { useDeal } from './hooks/useDeal.js';
 import { resolveRole } from './roles/resolveRole.js';
-import { AccountantView } from './views/AccountantView.jsx';
 import { AdminDashboard } from './views/AdminDashboard.jsx';
-import { ManagerView } from './views/ManagerView.jsx';
-import { PurchaserView } from './views/PurchaserView.jsx';
+import {
+  AccountantView,
+  DirectorView,
+  ManagerView,
+  PurchaserView,
+  StorekeeperView,
+} from './views/RoleScreen.jsx';
 
 export default function App() {
   const bx = useBx24Init();
@@ -21,9 +25,11 @@ export default function App() {
     error: dealError,
     saving,
     saveFields,
+    reload,
   } = useDeal(bx.dealId);
 
   const [showAdmin, setShowAdmin] = useState(false);
+  const [movingStage, setMovingStage] = useState(false);
 
   const resolved = useMemo(() => {
     if (!config || !deal || !bx.user) return null;
@@ -35,6 +41,19 @@ export default function App() {
       adminFlag: bx.adminFlag,
     });
   }, [config, deal, bx.user, bx.departments, bx.adminFlag]);
+
+  const onMoveStage = useCallback(
+    async (stageId) => {
+      setMovingStage(true);
+      try {
+        const ok = await saveFields({ STAGE_ID: stageId });
+        return ok;
+      } finally {
+        setMovingStage(false);
+      }
+    },
+    [saveFields]
+  );
 
   if (bx.error) {
     return (
@@ -124,31 +143,36 @@ export default function App() {
     isAppAdmin: resolved?.isAppAdmin,
     saveFields,
     saving,
+    reload,
+    onMoveStage,
+    movingStage,
   };
 
   let body = null;
   if (!resolved?.role) {
     body = <AccessDenied reason={resolved?.reason} />;
+  } else if (resolved.role === 'director') {
+    body = <DirectorView {...viewProps} />;
   } else if (resolved.role === 'accountant') {
     body = <AccountantView {...viewProps} />;
   } else if (resolved.role === 'purchaser') {
     body = <PurchaserView {...viewProps} />;
+  } else if (resolved.role === 'storekeeper') {
+    body = <StorekeeperView {...viewProps} />;
   } else {
     body = <ManagerView {...viewProps} />;
   }
 
   return (
     <div className="app">
-      <div className="app-header">
-        <div>
-          <span className="muted">
-            Сделка #{deal.ID} · воронка {deal.CATEGORY_ID}
-            {resolved?.funnel?.name ? ` (${resolved.funnel.name})` : ''}
-          </span>
-        </div>
+      <div className="app-topbar">
+        <span className="muted" style={{ fontSize: 13 }}>
+          Сделка #{deal.ID}
+          {resolved?.funnel?.name ? ` · ${resolved.funnel.name}` : ''}
+        </span>
         {resolved?.isAppAdmin && (
           <button type="button" className="btn btn-secondary" onClick={() => setShowAdmin((v) => !v)}>
-            {showAdmin ? 'Скрыть админ' : '⚙ Админ'}
+            {showAdmin ? 'Скрыть админ' : 'Админ'}
           </button>
         )}
       </div>

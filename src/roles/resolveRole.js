@@ -1,6 +1,6 @@
 /**
  * Resolve role for current user on a deal funnel.
- * Priority: accountant > purchaser > manager
+ * Priority: director > accountant > purchaser > storekeeper > manager
  */
 export function resolveRole({ categoryId, userDepartments, config, userId, adminFlag }) {
   const funnel = config?.funnels?.[String(categoryId)];
@@ -22,16 +22,19 @@ export function resolveRole({ categoryId, userDepartments, config, userId, admin
   const hit = (list) => (list || []).map(Number).some((id) => deps.has(id));
 
   let role = null;
-  if (hit(funnel.departments?.accountant)) role = 'accountant';
+  if (hit(funnel.departments?.director)) role = 'director';
+  else if (hit(funnel.departments?.accountant)) role = 'accountant';
   else if (hit(funnel.departments?.purchaser)) role = 'purchaser';
+  else if (hit(funnel.departments?.storekeeper)) role = 'storekeeper';
   else if (hit(funnel.departments?.manager)) role = 'manager';
 
-  // Dev / first-run: no departments configured yet — admin sees manager screen
   if (!role && isAppAdmin) {
     const emptyDeps =
       !(funnel.departments?.accountant || []).length &&
       !(funnel.departments?.purchaser || []).length &&
-      !(funnel.departments?.manager || []).length;
+      !(funnel.departments?.manager || []).length &&
+      !(funnel.departments?.director || []).length &&
+      !(funnel.departments?.storekeeper || []).length;
     if (emptyDeps) role = 'manager';
   }
 

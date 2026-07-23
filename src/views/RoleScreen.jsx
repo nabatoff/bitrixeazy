@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { formatUserName, getUser } from '../bitrix/dealApi.js';
+import { formatUserName, getUser, uploadDealFile } from '../bitrix/dealApi.js';
 import { fitWindow } from '../bitrix/bx24.js';
+import { DealStatusAlerts } from '../components/DealStatusAlerts.jsx';
 import { FieldForm } from '../components/FieldForm.jsx';
-import { TakeInWorkBanner } from '../components/TakeInWorkBanner.jsx';
+import { StageStepper } from '../components/StageStepper.jsx';
+import { WhoIsWorking } from '../components/WhoIsWorking.jsx';
+import { deriveDealAlerts } from '../deal/deriveDealAlerts.js';
+import { filterVisibleFields } from '../deal/visibleFields.js';
 import { useTakeInWork } from '../hooks/useTakeInWork.js';
 import { validateEitherOr } from '../validation/eitherOr.js';
 
@@ -53,11 +57,12 @@ export function RoleScreen({
   isAppAdmin,
   saveFields,
   saving,
+  reload,
+  funnel,
+  showStepper = false,
+  onMoveStage,
+  movingStage = false,
 }) {
-  const [values, setValues] = useState(() => pickValues(deal, fieldDefs));
-  const [errors, setErrors] = useState([]);
-  const [assignedName, setAssignedName] = useState('');
-
   const lock = useTakeInWork({
     dealId,
     lockField,
@@ -65,8 +70,25 @@ export function RoleScreen({
     enabled: Boolean(useLock && lockField),
   });
 
+  const [values, setValues] = useState(() => pickValues(deal, fieldDefs || []));
+  const [errors, setErrors] = useState([]);
+  const [assignedName, setAssignedName] = useState('');
+  const [uploadingFile, setUploadingFile] = useState(false);
+
+  const dealState = useMemo(() => ({ ...deal, ...values }), [deal, values]);
+
+  const visibility = useMemo(
+    () =>
+      filterVisibleFields(role, fieldDefs, dealState, {
+        lockIsMine: Boolean(lock.isMine),
+      }),
+    [role, fieldDefs, dealState, lock.isMine]
+  );
+
+  const visibleDefs = visibility.fields;
+
   useEffect(() => {
-    setValues(pickValues(deal, fieldDefs));
+    setValues(pickValues(deal, fieldDefs || []));
   }, [deal, fieldDefs]);
 
   useEffect(() => {
@@ -89,21 +111,49 @@ export function RoleScreen({
     };
   }, [values.ASSIGNED_BY_ID, deal?.ASSIGNED_BY_ID]);
 
-  useFitFrame([deal, values, errors, lock.isBlocked, lock.isMine, lock.isFree, role]);
+  const alerts = useMemo(() => deriveDealAlerts(deal), [deal]);
+
+  useFitFrame([
+    deal,
+    values,
+    errors,
+    lock.isBlocked,
+    lock.isMine,
+    lock.isFree,
+    role,
+    alerts,
+    visibility.emptyMessage,
+  ]);
 
   const locked = useLock ? !lock.canEdit : false;
+  const hideEdits =
+    locked || (visibility.hideFormUntilLock && !lock.isMine);
 
   const onChange = (code, value) => {
     setValues((prev) => ({ ...prev, [code]: value }));
   };
 
   const editableCodes = useMemo(
-    () => new Set(fieldDefs.filter((f) => f.mode === 'edit').map((f) => f.code)),
-    [fieldDefs]
+    () => new Set(visibleDefs.filter((f) => f.mode === 'edit').map((f) => f.code)),
+    [visibleDefs]
   );
 
+  const onUploadFile = async (code, file) => {
+    if (!file || !dealId) return;
+    setUploadingFile(true);
+    setErrors([]);
+    try {
+      await uploadDealFile(dealId, code, file);
+      if (typeof reload === 'function') await reload();
+    } catch (err) {
+      setErrors([err.message || String(err)]);
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
   const onSave = async () => {
-    const validationValues = { ...values };
+    const validationValues = { ...deal, ...values };
     const errs = validateEitherOr(validationValues, role);
     setErrors(errs);
     if (errs.length) return;
@@ -117,33 +167,94 @@ export function RoleScreen({
     await saveFields(fields);
   };
 
-  return (
-    <div>
-      <div className="app-header">
-        <h1>{title}</h1>
-        <span className="badge">{role}</span>
-      </div>
+  const showSave =
+    visibleDefs.some((f) => f.mode === 'edit') &&
+    !(visibility.hideFormUntilLock && !lock.isMine);
 
-      {useLock && (
-        <TakeInWorkBanner
-          lock={lock}
-          onTake={lock.take}
-          onRelease={lock.release}
-          canRelease={lock.isMine || isAppAdmin}
+  const formDefs =
+    visibility.hideFormUntilLock && !lock.isMine
+      ? visibleDefs.filter((f) => f.mode === 'view')
+      : visibleDefs;
+
+  return (
+    <div className="screen-wrap">
+      <WhoIsWorking deal={deal} lockFields={funnel?.lockFields} />
+      <DealStatusAlerts alerts={alerts} />
+
+      {showStepper && (
+        <StageStepper
+          deal={deal}
+          categoryId={deal?.CATEGORY_ID}
+          canEdit={role === 'manager'}
+          onMoveStage={onMoveStage}
+          moving={movingStage}
         />
       )}
 
-      <FieldForm
-        fieldDefs={fieldDefs}
-        values={values}
-        onChange={onChange}
-        client={client}
-        locked={locked}
-        errors={errors}
-        onSave={onSave}
-        saving={saving}
-        assignedName={assignedName}
-      />
+      <div className="screen-card">
+        <div className="screen-header">
+          <h1 className="screen-title">{title}</h1>
+          <div className="screen-header-actions">
+            <span className="badge">{role}</span>
+            {useLock && lock.isFree && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={lock.busy}
+                onClick={lock.take}
+              >
+                {lock.busy ? '…' : 'Взять в работу'}
+              </button>
+            )}
+            {useLock && lock.isMine && (lock.isMine || isAppAdmin) && (
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={lock.busy}
+                onClick={lock.release}
+              >
+                Освободить
+              </button>
+            )}
+          </div>
+        </div>
+
+        {useLock && lock.isBlocked && (
+          <div className="screen-lock-banner banner-block">
+            Сделка в работе у <strong>{lock.lockUserName || `ID ${lock.lockUserId}`}</strong>.
+            Редактирование заблокировано.
+          </div>
+        )}
+
+        {useLock && lock.isFree && (
+          <div className="screen-lock-banner banner-warn">
+            Сделка свободна. Возьмите в работу, чтобы редактировать.
+            {lock.error ? <div className="muted">{lock.error}</div> : null}
+          </div>
+        )}
+
+        {visibility.hideFormUntilLock && !lock.isMine && !lock.isBlocked && (
+          <div className="screen-lock-banner banner-warn">
+            После «Взять в работу» откроются поля закупа.
+          </div>
+        )}
+
+        <FieldForm
+          role={role}
+          fieldDefs={formDefs}
+          values={values}
+          onChange={onChange}
+          client={client}
+          locked={hideEdits}
+          errors={errors}
+          onSave={onSave}
+          saving={saving || uploadingFile}
+          assignedName={assignedName}
+          showSave={showSave}
+          onUploadFile={onUploadFile}
+          emptyMessage={visibility.emptyMessage}
+        />
+      </div>
     </div>
   );
 }
@@ -181,7 +292,32 @@ export function ManagerView(props) {
       role="manager"
       title="Экран менеджера"
       useLock={false}
+      showStepper
       fieldDefs={props.funnel?.fields?.manager || []}
+    />
+  );
+}
+
+export function DirectorView(props) {
+  return (
+    <RoleScreen
+      {...props}
+      role="director"
+      title="Экран руководителя"
+      useLock={false}
+      fieldDefs={props.funnel?.fields?.director || []}
+    />
+  );
+}
+
+export function StorekeeperView(props) {
+  return (
+    <RoleScreen
+      {...props}
+      role="storekeeper"
+      title="Экран кладовщика"
+      useLock={false}
+      fieldDefs={props.funnel?.fields?.storekeeper || []}
     />
   );
 }
