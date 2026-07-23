@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { contactCenterChatUrl } from '../config/contactCenter.js';
+import { openContactCenter } from '../config/contactCenter.js';
 import {
   contactCenterOriginBase,
   downloadFileUrl,
@@ -468,11 +468,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
   };
 
   const openCc = () => {
-    window.open(
-      contactCenterChatUrl({ chatId: chat?.chatId, dialogId: chat?.dialogId }),
-      '_blank',
-      'noopener,noreferrer'
-    );
+    openContactCenter({ chatId: chat?.chatId, dialogId: chat?.dialogId });
   };
 
   const formatRec = (ms) => {
@@ -484,9 +480,11 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
     <div className="wa-panel">
       <div className="wa-panel-head">
         <div className="wa-panel-head-info">
-          <div className="wa-panel-title">{client?.fullName || 'Клиент'}</div>
+          <div className="wa-panel-title">
+            {chat?.title || client?.fullName || 'Чат с клиентом'}
+          </div>
           <div className="wa-panel-sub">
-            {phone || 'нет телефона'}
+            {[client?.fullName, phone].filter(Boolean).join(' · ') || 'нет телефона'}
             {chat?.isClosed ? ' · сессия закрыта' : ''}
           </div>
         </div>

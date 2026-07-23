@@ -68,7 +68,7 @@ body {
 
 .screen-wrap--split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 460px);
   gap: 12px;
   align-items: start;
 }
