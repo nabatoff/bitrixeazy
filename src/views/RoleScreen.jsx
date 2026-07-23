@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatUserName, getUser, uploadDealFile } from '../bitrix/dealApi.js';
 import { fitWindow } from '../bitrix/bx24.js';
-import { DealStatusAlerts } from '../components/DealStatusAlerts.jsx';
 import { FieldForm } from '../components/FieldForm.jsx';
 import { StageStepper } from '../components/StageStepper.jsx';
 import { WhoIsWorking } from '../components/WhoIsWorking.jsx';
-import { deriveDealAlerts } from '../deal/deriveDealAlerts.js';
 import { filterVisibleFields } from '../deal/visibleFields.js';
 import { useTakeInWork } from '../hooks/useTakeInWork.js';
 import { validateEitherOr } from '../validation/eitherOr.js';
@@ -58,6 +56,7 @@ export function RoleScreen({
   saveFields,
   saving,
   reload,
+  softReload,
   funnel,
   showStepper = false,
   onMoveStage,
@@ -68,6 +67,11 @@ export function RoleScreen({
     lockField,
     currentUserId,
     enabled: Boolean(useLock && lockField),
+    extraOnTake:
+      role === 'purchaser'
+        ? { UF_CRM_1783485774093: '908' } // Взят в работу закупщиком = Да
+        : null,
+    onChanged: typeof softReload === 'function' ? softReload : typeof reload === 'function' ? reload : null,
   });
 
   const [values, setValues] = useState(() => pickValues(deal, fieldDefs || []));
@@ -111,8 +115,6 @@ export function RoleScreen({
     };
   }, [values.ASSIGNED_BY_ID, deal?.ASSIGNED_BY_ID]);
 
-  const alerts = useMemo(() => deriveDealAlerts(deal), [deal]);
-
   useFitFrame([
     deal,
     values,
@@ -121,7 +123,6 @@ export function RoleScreen({
     lock.isMine,
     lock.isFree,
     role,
-    alerts,
     visibility.emptyMessage,
   ]);
 
@@ -179,7 +180,6 @@ export function RoleScreen({
   return (
     <div className="screen-wrap">
       <WhoIsWorking deal={deal} lockFields={funnel?.lockFields} />
-      <DealStatusAlerts alerts={alerts} />
 
       {showStepper && (
         <StageStepper

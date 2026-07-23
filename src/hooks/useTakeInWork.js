@@ -7,7 +7,19 @@ function normalizeLockId(value) {
   return String(value);
 }
 
-export function useTakeInWork({ dealId, lockField, currentUserId, enabled }) {
+/**
+ * @param {object} opts
+ * @param {object} [opts.extraOnTake] — доп. поля при «взять в работу»
+ * @param {() => Promise<unknown>} [opts.onChanged] — после take/release (обычно reload сделки)
+ */
+export function useTakeInWork({
+  dealId,
+  lockField,
+  currentUserId,
+  enabled,
+  extraOnTake = null,
+  onChanged = null,
+}) {
   const [lockUserId, setLockUserId] = useState(null);
   const [lockUserName, setLockUserName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -58,8 +70,13 @@ export function useTakeInWork({ dealId, lockField, currentUserId, enabled }) {
         setError(`Сделка в работе у ${formatUserName(user)}`);
         return false;
       }
-      await updateDeal(dealId, { [lockField]: currentUserId });
+      const fields = {
+        [lockField]: currentUserId,
+        ...(extraOnTake && typeof extraOnTake === 'object' ? extraOnTake : {}),
+      };
+      await updateDeal(dealId, fields);
       await refresh();
+      if (typeof onChanged === 'function') await onChanged();
       return true;
     } catch (err) {
       setError(err.message || String(err));
@@ -67,7 +84,7 @@ export function useTakeInWork({ dealId, lockField, currentUserId, enabled }) {
     } finally {
       setBusy(false);
     }
-  }, [dealId, lockField, currentUserId, refresh]);
+  }, [dealId, lockField, currentUserId, refresh, extraOnTake, onChanged]);
 
   const release = useCallback(async () => {
     if (!lockField) return false;
@@ -76,6 +93,7 @@ export function useTakeInWork({ dealId, lockField, currentUserId, enabled }) {
     try {
       await updateDeal(dealId, { [lockField]: '' });
       await refresh();
+      if (typeof onChanged === 'function') await onChanged();
       return true;
     } catch (err) {
       setError(err.message || String(err));
@@ -83,7 +101,7 @@ export function useTakeInWork({ dealId, lockField, currentUserId, enabled }) {
     } finally {
       setBusy(false);
     }
-  }, [dealId, lockField, refresh]);
+  }, [dealId, lockField, refresh, onChanged]);
 
   return {
     lockUserId,

@@ -137,8 +137,8 @@ export function filterVisibleFields(role, fieldDefs, deal, { lockIsMine = false 
       { ...byCode('CLIENT', 'view'), section: 'Сделка' },
       { ...byCode('OPPORTUNITY', 'view'), section: 'Сделка' },
       { ...byCode('UF_CRM_1784532842739', 'view'), section: 'Сделка' },
+      { ...byCode('UF_CRM_1783485774093', 'view'), section: 'Закуп' },
       { ...byCode('UF_CRM_1750940585581', 'edit'), section: 'Закуп' },
-      { ...byCode('UF_CRM_1783485774093', 'edit'), section: 'Закуп' },
       { ...byCode('UF_CRM_1783486791226', 'edit'), section: 'Закуп' },
     ];
     if (status === '911') {

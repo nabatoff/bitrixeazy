@@ -160,7 +160,7 @@ const purchaserFields = [
   { code: 'UF_CRM_1782797821314', mode: 'view', section: S.deal },
   { code: 'UF_CRM_1782798174634', mode: 'view', section: S.deal },
   { code: 'UF_CRM_1731673902240', mode: 'view', section: S.deal },
-  { code: 'UF_CRM_1783485774093', mode: 'edit', section: S.purchaserEdit },
+  { code: 'UF_CRM_1783485774093', mode: 'view', section: S.purchaserEdit },
   { code: 'UF_CRM_1750940585581', mode: 'edit', section: S.purchaserEdit },
   { code: 'UF_CRM_1783486791226', mode: 'edit', section: S.purchaserEdit },
   { code: 'UF_CRM_1783487251339', mode: 'edit', section: S.purchaserEdit },

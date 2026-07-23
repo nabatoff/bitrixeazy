@@ -26,6 +26,7 @@ export default function App() {
     saving,
     saveFields,
     reload,
+    softReload,
   } = useDeal(bx.dealId);
 
   const [showAdmin, setShowAdmin] = useState(false);
@@ -144,6 +145,7 @@ export default function App() {
     saveFields,
     saving,
     reload,
+    softReload,
     onMoveStage,
     movingStage,
   };

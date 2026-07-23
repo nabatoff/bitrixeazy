@@ -8,7 +8,8 @@ export function useDeal(dealId) {
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (opts = {}) => {
+    const quiet = Boolean(opts.quiet);
     if (!dealId) {
       setDeal(null);
       setClient(null);
@@ -16,7 +17,7 @@ export function useDeal(dealId) {
       setError(null);
       return null;
     }
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const data = await getDeal(dealId);
@@ -32,10 +33,10 @@ export function useDeal(dealId) {
       return data;
     } catch (err) {
       setError(err.message || String(err));
-      setDeal(null);
+      if (!quiet) setDeal(null);
       return null;
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [dealId]);
 
@@ -43,13 +44,15 @@ export function useDeal(dealId) {
     reload();
   }, [reload]);
 
+  const softReload = useCallback(() => reload({ quiet: true }), [reload]);
+
   const saveFields = useCallback(
     async (fields) => {
       setSaving(true);
       setError(null);
       try {
         await updateDeal(dealId, fields);
-        await reload();
+        await reload({ quiet: true });
         return true;
       } catch (err) {
         setError(err.message || String(err));
@@ -61,5 +64,5 @@ export function useDeal(dealId) {
     [dealId, reload]
   );
 
-  return { deal, client, setClient, loading, error, saving, reload, saveFields };
+  return { deal, client, setClient, loading, error, saving, reload, softReload, saveFields };
 }
