@@ -560,26 +560,33 @@ export function isOutgoingMessage(msg, currentUserId) {
 }
 
 const SYSTEM_TEXT_RE =
-  /начал работу с диалогом|завершил работу|диалог закрыт|перевед[её]н|поставил оценку|пригласил|покинул|приглашение направлено|участник(?:ам|ов)? очереди|очередь оператор|оператор присоедини|сессия (?:открыт|закрыт)|ожидает ответа|назначен ответственный/i;
+  /начал работу с диалогом|завершил работу|диалог закрыт|перевед[её]н|поставил оценку|пригласил|покинул|приглашение направлено|участник(?:ам|ов)? очереди|очередь оператор|оператор присоедини|сессия (?:открыт|закрыт)|ожидает ответа|назначен ответственный|автоматическ\w*\s+завершен|завершен\w*\s+диалог|закрытие диалог|диалог\s+завершен|начат\w*\s+новый\s+диалог|новый диалог\s*№?\s*\d*|диалог\s*№\s*\d+|номер\s+диалог|открыт\w*\s+диалог|сессия\s+№|session\s+(?:start|finish|close)|ol[_-]?(?:start|finish|close)|таймаут|по\s+истечении|клиент\s+не\s+отвеча|ожидание\s+ответа\s+клиента/i;
 
 export function isSystemMessage(msg) {
-  const authorId = parseInt(msg.author_id || msg.senderId || 0, 10);
-  const text = msg?.text || '';
-  const p = msg?.params || {};
-  const code = p.CODE;
-
   if (isConnectorOperatorMessage(msg)) return false;
   if (getFileIds(msg).length) return false;
 
+  const authorId = parseInt(msg.author_id || msg.senderId || 0, 10);
+  const text = msg?.text || '';
+  const plain = stripBbLite(text);
+  const p = msg?.params || {};
+  const code = p.CODE;
+
+  if (msg?.system === true || msg?.isSystem === true) return true;
+  if (p.system === 'Y' || p.SYSTEM === 'Y' || p.NOTIFY === 'system') return true;
   if (code && (Array.isArray(code) ? code.length : true)) return true;
-  if (SYSTEM_TEXT_RE.test(text) || SYSTEM_TEXT_RE.test(stripBbLite(text))) return true;
+
+  // служебные фразы OL — даже если author_id бота/системы ≠ 0
+  if (SYSTEM_TEXT_RE.test(text) || SYSTEM_TEXT_RE.test(plain)) return true;
+
   if (/\[USER=\d+/i.test(text) && authorId === 0) return true;
 
-  // author 0 + после очистки почти пусто / только служебное
   if (authorId === 0) {
-    const plain = stripBbLite(text);
     if (!plain) return true;
     if (/^[-—–\s.]+$/.test(plain)) return true;
+    if (/диалог/i.test(plain) && /(№|номер|заверш|открыт|закрыт|начат|сесси)/i.test(plain)) {
+      return true;
+    }
   }
   return false;
 }

@@ -104,6 +104,14 @@ function pickMime() {
   return '';
 }
 
+function pauseOtherVoices(current) {
+  document.querySelectorAll('audio.wa-voice').forEach((el) => {
+    if (el !== current && !el.paused) {
+      el.pause();
+    }
+  });
+}
+
 function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
   const [src, setSrc] = useState('');
   const [kind, setKind] = useState(() => guessMediaKind(file));
@@ -170,14 +178,30 @@ function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
   if (kind === 'audio') {
     return (
       <div className="wa-media">
-        <audio controls preload="metadata" src={src} className="wa-voice" />
+        <audio
+          controls
+          preload="metadata"
+          src={src}
+          className="wa-voice"
+          onPlay={(e) => pauseOtherVoices(e.currentTarget)}
+        />
       </div>
     );
   }
   if (kind === 'video') {
     return (
       <div className="wa-media">
-        <video controls preload="metadata" src={src} />
+        <video
+          controls
+          preload="metadata"
+          src={src}
+          onPlay={(e) => {
+            pauseOtherVoices(null);
+            document.querySelectorAll('video').forEach((el) => {
+              if (el !== e.currentTarget && !el.paused) el.pause();
+            });
+          }}
+        />
       </div>
     );
   }
