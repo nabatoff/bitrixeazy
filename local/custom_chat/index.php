@@ -1328,9 +1328,10 @@ BX.ready(function () {
 		const ext = String(raw.extension || raw.EXTENSION || name.split('.').pop() || '').toLowerCase();
 		let type = String(raw.type || raw.TYPE || raw.mediaType || '').toLowerCase();
 		if (!type && /^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(ext)) type = 'image';
-		const urlPreview = raw.urlPreview || raw.previewUrl || raw.previewImage || raw.urlPreviewDownload || '';
-		const urlShow = raw.urlShow || raw.showUrl || raw.viewUrl || raw.url || '';
-		const urlDownload = raw.urlDownload || raw.downloadUrl || raw.src || '';
+		const media = raw.mediaUrl || {};
+		const urlPreview = raw.urlPreview || raw.previewUrl || raw.previewImage || raw.urlPreviewDownload || media.sd || media.SD || '';
+		const urlShow = raw.urlShow || raw.showUrl || raw.viewUrl || raw.url || media.hd || media.HD || '';
+		const urlDownload = raw.urlDownload || raw.downloadUrl || raw.src || media.hd || media.HD || '';
 		return {
 			id: id,
 			name: name,
@@ -1412,7 +1413,9 @@ BX.ready(function () {
 		for (let i = 0; i < missing.length; i += 4) {
 			const chunk = missing.slice(i, i + 4);
 			await Promise.all(chunk.map(async function (id) {
-				const url = await resolveMediaUrl(id, '');
+				const f = filesMap[id] || {};
+				const existing = f.urlPreview || f.urlShow || f.urlDownload || '';
+				const url = existing || await resolveMediaUrl(id, '');
 				if (!url) return;
 				const prev = filesMap[id] || { id: id };
 				filesMap[id] = Object.assign(prev, {
@@ -1933,19 +1936,44 @@ BX.ready(function () {
 			'</div>';
 	}
 
+	const failedMediaDownloads = new Set();
+
 	async function resolveMediaUrl(fileId, directUrl) {
 		if (directUrl) return directUrl;
-		if (!fileId || !currentDialogId) return '';
-		try {
-			const data = await rest('im.v2.File.download', {
-				dialogId: currentDialogId,
-				fileId: fileId
-			});
-			return (data && data.downloadUrl) ? data.downloadUrl : '';
-		} catch (e) {
-			console.error(e);
-			return '';
+		const id = parseInt(fileId, 10);
+		if (!id || !currentDialogId) return '';
+		if (failedMediaDownloads.has(id)) return '';
+
+		const dialogVariants = [String(currentDialogId)];
+		if (/^chat\d+$/i.test(String(currentDialogId))) {
+			dialogVariants.push(String(currentDialogId).replace(/^chat/i, ''));
+		} else if (/^\d+$/.test(String(currentDialogId))) {
+			dialogVariants.push('chat' + currentDialogId);
 		}
+
+		for (let i = 0; i < dialogVariants.length; i++) {
+			try {
+				const data = await rest('im.v2.File.download', {
+					dialogId: dialogVariants[i],
+					fileId: id
+				});
+				const url = (data && (data.downloadUrl || data.link || data.url)) || '';
+				if (url) return url;
+			} catch (e) {
+				/* try next */
+			}
+		}
+
+		try {
+			const disk = await rest('disk.file.get', { id: id });
+			const url = (disk && (disk.DOWNLOAD_URL || disk.downloadUrl || disk.SHOW_URL || disk.DETAIL_URL)) || '';
+			if (url) return url;
+		} catch (e) {
+			/* ignore */
+		}
+
+		failedMediaDownloads.add(id);
+		return '';
 	}
 
 	async function bindLazyMedia(root) {
@@ -1964,8 +1992,11 @@ BX.ready(function () {
 
 			const setSrc = async (preferDirect) => {
 				let src = preferDirect ? direct : '';
+				if (!src) {
+					const f2 = filesMap[fileId] || {};
+					src = f2.urlShow || f2.urlDownload || f2.urlPreview || '';
+				}
 				if (!src) src = await resolveMediaUrl(fileId, '');
-				if (!src && preferDirect) src = await resolveMediaUrl(fileId, '');
 				if (!src) {
 					if (isImg) {
 						el.style.display = 'none';
@@ -2078,16 +2109,12 @@ BX.ready(function () {
 		div.querySelectorAll('a[data-file-id]').forEach(a => {
 			a.addEventListener('click', async e => {
 				e.preventDefault();
-				try {
-					const data = await rest('im.v2.File.download', {
-						dialogId: currentDialogId,
-						fileId: parseInt(a.dataset.fileId, 10)
-					});
-					if (data && data.downloadUrl) window.open(data.downloadUrl, '_blank');
-				} catch (err) {
-					console.error(err);
-					alert('Не удалось скачать файл');
-				}
+				const fid = parseInt(a.dataset.fileId, 10);
+				const f = filesMap[fid] || {};
+				const direct = f.urlDownload || f.urlShow || f.urlPreview || '';
+				const url = await resolveMediaUrl(fid, direct);
+				if (url) window.open(url, '_blank');
+				else alert('Не удалось скачать файл');
 			});
 		});
 		return div;

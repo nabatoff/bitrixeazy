@@ -377,30 +377,65 @@ export function absolutizeBitrixUrl(url) {
 }
 
 export async function downloadFileUrl(dialogId, fileId) {
-  const data = await bx24Call('im.v2.File.download', {
-    dialogId,
-    fileId: parseInt(fileId, 10),
-  });
-  return absolutizeBitrixUrl(data?.downloadUrl || '');
-}
+  const id = parseInt(fileId, 10);
+  if (!id) return '';
 
-/**
- * Надёжный src для img/audio/video: download API → абсолютные URL → blob (если CORS пускает).
- */
-export async function resolveMediaSrc(dialogId, fileId, file = null) {
-  let url = '';
+  const dialogVariants = [];
+  const d = String(dialogId || '');
+  if (d) dialogVariants.push(d);
+  if (/^chat\d+$/i.test(d)) dialogVariants.push(d.replace(/^chat/i, ''));
+  else if (/^\d+$/.test(d)) dialogVariants.push(`chat${d}`);
+
+  // 1) im.v2 — нужен disk fileId + dialogId
+  for (const dialog of dialogVariants) {
+    try {
+      const data = await bx24Call('im.v2.File.download', {
+        dialogId: dialog,
+        fileId: id,
+      });
+      const url = data?.downloadUrl || data?.link || data?.url || '';
+      if (url) return absolutizeBitrixUrl(url);
+    } catch {
+      /* try next */
+    }
+  }
+
+  // 2) disk.file.get — часто FILE_ID из сообщения = id на Диске
   try {
-    url = await downloadFileUrl(dialogId, fileId);
+    const disk = await bx24Call('disk.file.get', { id });
+    const url =
+      disk?.DOWNLOAD_URL ||
+      disk?.downloadUrl ||
+      disk?.SHOW_URL ||
+      disk?.DETAIL_URL ||
+      '';
+    if (url) return absolutizeBitrixUrl(url);
   } catch {
     /* ignore */
   }
+
+  return '';
+}
+
+/**
+ * Надёжный src: сначала URL из messages.files, потом REST download/disk, потом blob.
+ */
+export async function resolveMediaSrc(dialogId, fileId, file = null) {
+  let url =
+    absolutizeBitrixUrl(file?.urlShow) ||
+    absolutizeBitrixUrl(file?.urlDownload) ||
+    absolutizeBitrixUrl(file?.urlPreview) ||
+    absolutizeBitrixUrl(file?.mediaHd) ||
+    absolutizeBitrixUrl(file?.mediaSd);
+
   if (!url) {
-    url =
-      absolutizeBitrixUrl(file?.urlDownload) ||
-      absolutizeBitrixUrl(file?.urlShow) ||
-      absolutizeBitrixUrl(file?.urlPreview);
+    try {
+      url = await downloadFileUrl(dialogId, fileId);
+    } catch {
+      url = '';
+    }
   }
-  if (!url) return { src: '', blobUrl: '' };
+  if (!url) return { src: '', blobUrl: false, contentType: '' };
 
   try {
     const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
@@ -411,7 +446,7 @@ export async function resolveMediaSrc(dialogId, fileId, file = null) {
       }
     }
   } catch {
-    /* CORS — используем прямой URL */
+    /* CORS — прямой URL (на портале / в popup КЦ обычно ок) */
   }
   return { src: url, blobUrl: false, contentType: '' };
 }
@@ -443,9 +478,11 @@ export function normalizeFileRecord(raw, key) {
     name,
     extension: ext,
     type,
-    urlPreview: absolutizeBitrixUrl(raw.urlPreview || raw.previewUrl || ''),
-    urlShow: absolutizeBitrixUrl(raw.urlShow || raw.showUrl || raw.url || ''),
+    urlPreview: absolutizeBitrixUrl(raw.urlPreview || raw.previewUrl || raw.previewImage || ''),
+    urlShow: absolutizeBitrixUrl(raw.urlShow || raw.showUrl || raw.viewUrl || raw.url || ''),
     urlDownload: absolutizeBitrixUrl(raw.urlDownload || raw.downloadUrl || raw.src || ''),
+    mediaHd: absolutizeBitrixUrl((raw.mediaUrl && (raw.mediaUrl.hd || raw.mediaUrl.HD)) || ''),
+    mediaSd: absolutizeBitrixUrl((raw.mediaUrl && (raw.mediaUrl.sd || raw.mediaUrl.SD)) || ''),
   };
 }
 
