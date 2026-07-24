@@ -112,7 +112,7 @@ function pauseOtherVoices(current) {
   });
 }
 
-function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
+function ChatMedia({ fileId, file, dialogId, chatId, onOpenImage }) {
   const [src, setSrc] = useState('');
   const [kind, setKind] = useState(() => guessMediaKind(file));
   const [err, setErr] = useState(false);
@@ -123,7 +123,7 @@ function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
     (async () => {
       setErr(false);
       try {
-        const resolved = await resolveMediaSrc(dialogId, fileId, file);
+        const resolved = await resolveMediaSrc(dialogId, fileId, file, chatId);
         if (cancelled) {
           if (resolved.blobUrl && resolved.src) URL.revokeObjectURL(resolved.src);
           return;
@@ -150,7 +150,7 @@ function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
         blobRef.current = '';
       }
     };
-  }, [dialogId, fileId, file?.name, file?.extension, file?.type, file?.urlDownload, file?.urlShow]);
+  }, [dialogId, chatId, fileId, file?.name, file?.extension, file?.type, file?.urlDownload, file?.urlShow]);
 
   if (err) {
     return <div className="wa-media-fallback">Не удалось загрузить файл</div>;
@@ -212,7 +212,7 @@ function ChatMedia({ fileId, file, dialogId, onOpenImage }) {
   );
 }
 
-function MessageBubble({ msg, currentUserId, filesMap, dialogId, onOpenImage }) {
+function MessageBubble({ msg, currentUserId, filesMap, dialogId, chatId, onOpenImage }) {
   if (!shouldRenderMessage(msg)) return null;
 
   const system = isSystemMessage(msg);
@@ -228,6 +228,7 @@ function MessageBubble({ msg, currentUserId, filesMap, dialogId, onOpenImage }) 
           fileId={id}
           file={filesMap[id]}
           dialogId={dialogId}
+          chatId={chatId}
           onOpenImage={onOpenImage}
         />
       ))}
@@ -616,6 +617,7 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
                   currentUserId={currentUserId}
                   filesMap={filesMap}
                   dialogId={chat.dialogId}
+                  chatId={chat.chatId}
                   onOpenImage={openImage}
                 />
               ))

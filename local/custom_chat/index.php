@@ -40,6 +40,129 @@ if (!empty($_GET['wa_ffmpeg'])) {
 	exit;
 }
 
+/**
+ * Прокси медиафайлов чата через сессию портала.
+ * REST im.v2.File.download / disk.file.get часто 400/401 — обходим.
+ */
+if (!empty($_GET['wa_media'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	define('BX_SECURITY_SHOW_MESSAGE', false);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+
+	global $USER;
+	$origin = isset($_SERVER['HTTP_ORIGIN']) ? (string)$_SERVER['HTTP_ORIGIN'] : '';
+	$allowOrigins = [
+		'https://bitrixeazy.vercel.app',
+		'https://crm.artflowers.kz',
+	];
+	if ($origin && (in_array($origin, $allowOrigins, true) || preg_match('#^https://[\w-]+\.vercel\.app$#', $origin))) {
+		header('Access-Control-Allow-Origin: ' . $origin);
+		header('Access-Control-Allow-Credentials: true');
+		header('Vary: Origin');
+	}
+	if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+		header('Access-Control-Allow-Methods: GET, OPTIONS');
+		header('Access-Control-Allow-Headers: Content-Type');
+		http_response_code(204);
+		exit;
+	}
+
+	if (!$USER || !$USER->IsAuthorized()) {
+		http_response_code(401);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'Auth required';
+		exit;
+	}
+
+	$fileId = (int)$_GET['wa_media'];
+	$chatId = (int)($_GET['chat'] ?? 0);
+	if ($fileId <= 0) {
+		http_response_code(400);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'Bad file id';
+		exit;
+	}
+
+	$fileArray = null;
+
+	if (\Bitrix\Main\Loader::includeModule('disk')) {
+		try {
+			$diskFile = \Bitrix\Disk\File::loadById($fileId);
+			if ($diskFile) {
+				$ok = true;
+				try {
+					$storage = $diskFile->getStorage();
+					if ($storage) {
+						$securityContext = $storage->getCurrentUserSecurityContext();
+						$ok = $diskFile->canRead($securityContext);
+					}
+				} catch (\Throwable $e) {
+					$ok = true; // fallback: попробуем отдать авторизованному
+				}
+				if ($ok) {
+					$fileArray = $diskFile->getFile();
+				}
+			}
+		} catch (\Throwable $e) {
+			$fileArray = null;
+		}
+	}
+
+	if (!$fileArray && $chatId > 0 && \Bitrix\Main\Loader::includeModule('im')) {
+		try {
+			if (class_exists('\\Bitrix\\Im\\Model\\FileTable')) {
+				$row = \Bitrix\Im\Model\FileTable::getList([
+					'filter' => [
+						'=ID' => $fileId,
+						'=CHAT_ID' => $chatId,
+					],
+					'limit' => 1,
+				])->fetch();
+				$diskId = 0;
+				if ($row) {
+					$diskId = (int)($row['DISK_FILE_ID'] ?? $row['DISK_ID'] ?? 0);
+				}
+				if ($diskId > 0 && \Bitrix\Main\Loader::includeModule('disk')) {
+					$diskFile = \Bitrix\Disk\File::loadById($diskId);
+					if ($diskFile) {
+						$fileArray = $diskFile->getFile();
+					}
+				}
+			}
+		} catch (\Throwable $e) {
+			$fileArray = null;
+		}
+	}
+
+	if (!$fileArray && \Bitrix\Main\Loader::includeModule('im')) {
+		try {
+			// иногда ID из сообщения = ID записи b_file / disk напрямую через CFile
+			$candidate = \CFile::GetFileArray($fileId);
+			if (is_array($candidate) && !empty($candidate['SRC'])) {
+				$fileArray = $candidate;
+			}
+		} catch (\Throwable $e) {
+			$fileArray = null;
+		}
+	}
+
+	if (!is_array($fileArray) || empty($fileArray['ID'])) {
+		http_response_code(404);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'File not found';
+		exit;
+	}
+
+	header('Cache-Control: private, max-age=3600');
+	\CFile::ViewByUser($fileArray, [
+		'force_download' => false,
+		'cache_time' => 3600,
+		'attachment_name' => $fileArray['ORIGINAL_NAME'] ?? $fileArray['FILE_NAME'] ?? 'file',
+	]);
+	exit;
+}
+
 require($_SERVER["DOCUMENT_ROOT"]."/bitrix/header.php");
 $APPLICATION->SetTitle("Контакт-центр (WhatsApp Web UI)");
 
@@ -1405,28 +1528,20 @@ BX.ready(function () {
 	}
 
 	async function prefetchFileUrls(fileIds) {
-		if (!currentDialogId || !fileIds.length) return;
-		const missing = fileIds.filter(function (id) {
+		if (!fileIds.length) return;
+		fileIds.forEach(function (id) {
 			const f = filesMap[id];
-			return !f || !(f.urlPreview || f.urlShow || f.urlDownload);
+			if (f && (f.urlPreview || f.urlShow || f.urlDownload)) return;
+			const proxy = waMediaProxyUrl(id);
+			if (!proxy) return;
+			const prev = filesMap[id] || { id: id };
+			filesMap[id] = Object.assign(prev, {
+				id: id,
+				urlDownload: prev.urlDownload || proxy,
+				urlShow: prev.urlShow || proxy,
+				urlPreview: prev.urlPreview || proxy
+			});
 		});
-		for (let i = 0; i < missing.length; i += 4) {
-			const chunk = missing.slice(i, i + 4);
-			await Promise.all(chunk.map(async function (id) {
-				const f = filesMap[id] || {};
-				const existing = f.urlPreview || f.urlShow || f.urlDownload || '';
-				const url = existing || await resolveMediaUrl(id, '');
-				if (!url) return;
-				const prev = filesMap[id] || { id: id };
-				filesMap[id] = Object.assign(prev, {
-					id: id,
-					urlDownload: prev.urlDownload || url,
-					urlShow: prev.urlShow || url,
-					urlPreview: prev.urlPreview || url,
-					type: prev.type || (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(url) ? 'image' : prev.type)
-				});
-			}));
-		}
 	}
 
 	function matchConnectorOperatorPrefix(text) {
@@ -1938,42 +2053,36 @@ BX.ready(function () {
 
 	const failedMediaDownloads = new Set();
 
+	function waMediaProxyUrl(fileId) {
+		const id = parseInt(fileId, 10);
+		if (!id) return '';
+		const url = new URL(window.location.href);
+		url.search = '';
+		url.hash = '';
+		url.searchParams.set('wa_media', String(id));
+		const chatId = currentChatId || String(currentDialogId || '').replace(/^chat/i, '');
+		if (chatId && /^\d+$/.test(String(chatId))) {
+			url.searchParams.set('chat', String(chatId));
+		}
+		return url.toString();
+	}
+
 	async function resolveMediaUrl(fileId, directUrl) {
 		if (directUrl) return directUrl;
 		const id = parseInt(fileId, 10);
-		if (!id || !currentDialogId) return '';
-		if (failedMediaDownloads.has(id)) return '';
+		if (!id) return '';
 
-		const dialogVariants = [String(currentDialogId)];
-		if (/^chat\d+$/i.test(String(currentDialogId))) {
-			dialogVariants.push(String(currentDialogId).replace(/^chat/i, ''));
-		} else if (/^\d+$/.test(String(currentDialogId))) {
-			dialogVariants.push('chat' + currentDialogId);
+		const f = filesMap[id] || {};
+		const existing = f.urlShow || f.urlDownload || f.urlPreview || '';
+		if (existing) return existing;
+
+		if (failedMediaDownloads.has(id)) {
+			return waMediaProxyUrl(id);
 		}
 
-		for (let i = 0; i < dialogVariants.length; i++) {
-			try {
-				const data = await rest('im.v2.File.download', {
-					dialogId: dialogVariants[i],
-					fileId: id
-				});
-				const url = (data && (data.downloadUrl || data.link || data.url)) || '';
-				if (url) return url;
-			} catch (e) {
-				/* try next */
-			}
-		}
-
-		try {
-			const disk = await rest('disk.file.get', { id: id });
-			const url = (disk && (disk.DOWNLOAD_URL || disk.downloadUrl || disk.SHOW_URL || disk.DETAIL_URL)) || '';
-			if (url) return url;
-		} catch (e) {
-			/* ignore */
-		}
-
+		// REST im.v2 / disk часто 400/401 — не спамим, сразу прокси сессии портала
 		failedMediaDownloads.add(id);
-		return '';
+		return waMediaProxyUrl(id);
 	}
 
 	async function bindLazyMedia(root) {

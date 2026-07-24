@@ -376,51 +376,34 @@ export function absolutizeBitrixUrl(url) {
   return s.startsWith('/') ? origin + s : `${origin}/${s}`;
 }
 
-export async function downloadFileUrl(dialogId, fileId) {
+/** Прокси медиа на портале (сессия Битрикс). REST download/disk на этом портале даёт 400/401. */
+export function portalMediaProxyUrl(fileId, chatId = 0) {
   const id = parseInt(fileId, 10);
   if (!id) return '';
-
-  const dialogVariants = [];
-  const d = String(dialogId || '');
-  if (d) dialogVariants.push(d);
-  if (/^chat\d+$/i.test(d)) dialogVariants.push(d.replace(/^chat/i, ''));
-  else if (/^\d+$/.test(d)) dialogVariants.push(`chat${d}`);
-
-  // 1) im.v2 — нужен disk fileId + dialogId
-  for (const dialog of dialogVariants) {
-    try {
-      const data = await bx24Call('im.v2.File.download', {
-        dialogId: dialog,
-        fileId: id,
-      });
-      const url = data?.downloadUrl || data?.link || data?.url || '';
-      if (url) return absolutizeBitrixUrl(url);
-    } catch {
-      /* try next */
-    }
-  }
-
-  // 2) disk.file.get — часто FILE_ID из сообщения = id на Диске
   try {
-    const disk = await bx24Call('disk.file.get', { id });
-    const url =
-      disk?.DOWNLOAD_URL ||
-      disk?.downloadUrl ||
-      disk?.SHOW_URL ||
-      disk?.DETAIL_URL ||
-      '';
-    if (url) return absolutizeBitrixUrl(url);
+    const url = new URL(CONTACT_CENTER_URL);
+    url.searchParams.set('wa_media', String(id));
+    let cid = parseInt(chatId, 10);
+    if (!cid) {
+      const d = String(chatId || '').replace(/^chat/i, '');
+      cid = parseInt(d, 10) || 0;
+    }
+    if (cid) url.searchParams.set('chat', String(cid));
+    return url.toString();
   } catch {
-    /* ignore */
+    return '';
   }
+}
 
-  return '';
+export async function downloadFileUrl(dialogId, fileId, chatId = 0) {
+  return portalMediaProxyUrl(fileId, chatId || dialogId);
 }
 
 /**
- * Надёжный src: сначала URL из messages.files, потом REST download/disk, потом blob.
+ * src: URL из messages.files → прокси КЦ (?wa_media=) на портале.
+ * Без im.v2.File.download / disk.file.get (400/401 spam).
  */
-export async function resolveMediaSrc(dialogId, fileId, file = null) {
+export async function resolveMediaSrc(dialogId, fileId, file = null, chatId = 0) {
   let url =
     absolutizeBitrixUrl(file?.urlShow) ||
     absolutizeBitrixUrl(file?.urlDownload) ||
@@ -429,16 +412,16 @@ export async function resolveMediaSrc(dialogId, fileId, file = null) {
     absolutizeBitrixUrl(file?.mediaSd);
 
   if (!url) {
-    try {
-      url = await downloadFileUrl(dialogId, fileId);
-    } catch {
-      url = '';
-    }
+    url = portalMediaProxyUrl(fileId, chatId || dialogId);
   }
   if (!url) return { src: '', blobUrl: false, contentType: '' };
 
+  const useCreds = /wa_media=/.test(url);
   try {
-    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    const res = await fetch(url, {
+      mode: 'cors',
+      credentials: useCreds ? 'include' : 'omit',
+    });
     if (res.ok) {
       const blob = await res.blob();
       if (blob && blob.size > 0 && !/text\/html/i.test(blob.type)) {
@@ -446,7 +429,7 @@ export async function resolveMediaSrc(dialogId, fileId, file = null) {
       }
     }
   } catch {
-    /* CORS — прямой URL (на портале / в popup КЦ обычно ок) */
+    /* CORS — прямой URL (в popup КЦ same-origin ок) */
   }
   return { src: url, blobUrl: false, contentType: '' };
 }
