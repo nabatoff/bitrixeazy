@@ -8,6 +8,7 @@ import {
   getDialogMessages,
   getFileIds,
   guessMediaKind,
+  hydrateFilesFromMessages,
   isOutgoingMessage,
   isSystemMessage,
   markDialogRead,
@@ -302,7 +303,11 @@ export function ClientChatPanel({ dealId, client, currentUserId }) {
   };
 
   const applyMessages = (msgs, files, { replace = false } = {}) => {
-    if (files) setFilesMap((prev) => mergeFilesMap(replace ? {} : prev, files));
+    setFilesMap((prev) => {
+      let next = mergeFilesMap(replace ? {} : prev, files);
+      next = hydrateFilesFromMessages(next, msgs);
+      return next;
+    });
     setMessages((prev) => {
       if (replace) return msgs;
       const ids = new Set(prev.map((m) => String(m.id)));

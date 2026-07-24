@@ -85,6 +85,7 @@ if (!empty($_GET['wa_media'])) {
 	}
 
 	$fileArray = null;
+	$diskFileObj = null;
 
 	if (\Bitrix\Main\Loader::includeModule('disk')) {
 		try {
@@ -98,9 +99,10 @@ if (!empty($_GET['wa_media'])) {
 						$ok = $diskFile->canRead($securityContext);
 					}
 				} catch (\Throwable $e) {
-					$ok = true; // fallback: попробуем отдать авторизованному
+					$ok = true;
 				}
 				if ($ok) {
+					$diskFileObj = $diskFile;
 					$fileArray = $diskFile->getFile();
 				}
 			}
@@ -109,35 +111,53 @@ if (!empty($_GET['wa_media'])) {
 		}
 	}
 
-	if (!$fileArray && $chatId > 0 && \Bitrix\Main\Loader::includeModule('im')) {
+	// FILE_ID из чата часто = ID строки b_im_file, не Disk
+	if (!$fileArray && \Bitrix\Main\Loader::includeModule('im')) {
 		try {
+			$row = null;
 			if (class_exists('\\Bitrix\\Im\\Model\\FileTable')) {
+				$filter = ['=ID' => $fileId];
+				if ($chatId > 0) {
+					$filter['=CHAT_ID'] = $chatId;
+				}
 				$row = \Bitrix\Im\Model\FileTable::getList([
-					'filter' => [
-						'=ID' => $fileId,
-						'=CHAT_ID' => $chatId,
-					],
+					'filter' => $filter,
 					'limit' => 1,
 				])->fetch();
-				$diskId = 0;
-				if ($row) {
-					$diskId = (int)($row['DISK_FILE_ID'] ?? $row['DISK_ID'] ?? 0);
+				if (!$row && $chatId > 0) {
+					$row = \Bitrix\Im\Model\FileTable::getList([
+						'filter' => ['=ID' => $fileId],
+						'limit' => 1,
+					])->fetch();
 				}
-				if ($diskId > 0 && \Bitrix\Main\Loader::includeModule('disk')) {
-					$diskFile = \Bitrix\Disk\File::loadById($diskId);
-					if ($diskFile) {
-						$fileArray = $diskFile->getFile();
+			}
+			$diskId = 0;
+			if ($row) {
+				$diskId = (int)($row['DISK_FILE_ID'] ?? $row['DISK_ID'] ?? 0);
+			}
+			if ($diskId <= 0 && class_exists('\\CIMDisk') && method_exists('CIMDisk', 'GetFile')) {
+				$imFile = \CIMDisk::GetFile($fileId);
+				if (is_array($imFile)) {
+					$diskId = (int)($imFile['DISK_FILE_ID'] ?? $imFile['disk_file_id'] ?? 0);
+					if (!$fileArray && !empty($imFile['FILE'])) {
+						$fileArray = $imFile['FILE'];
 					}
 				}
 			}
+			if ($diskId > 0 && \Bitrix\Main\Loader::includeModule('disk')) {
+				$diskFile = \Bitrix\Disk\File::loadById($diskId);
+				if ($diskFile) {
+					$diskFileObj = $diskFile;
+					$fileArray = $diskFile->getFile();
+				}
+			}
 		} catch (\Throwable $e) {
-			$fileArray = null;
+			/* continue */
 		}
 	}
 
-	if (!$fileArray && \Bitrix\Main\Loader::includeModule('im')) {
+	if (!$fileArray) {
 		try {
-			// иногда ID из сообщения = ID записи b_file / disk напрямую через CFile
 			$candidate = \CFile::GetFileArray($fileId);
 			if (is_array($candidate) && !empty($candidate['SRC'])) {
 				$fileArray = $candidate;
@@ -151,6 +171,20 @@ if (!empty($_GET['wa_media'])) {
 		http_response_code(404);
 		header('Content-Type: text/plain; charset=utf-8');
 		echo 'File not found';
+		exit;
+	}
+
+	// Прямой стрим надёжнее ViewByUser для <img>/<audio> (нет лишних редиректов)
+	$filePath = \CFile::GetPath($fileArray['ID']);
+	$absPath = $filePath ? ($_SERVER['DOCUMENT_ROOT'] . $filePath) : '';
+	if ($absPath && is_file($absPath)) {
+		$mime = $fileArray['CONTENT_TYPE'] ?? 'application/octet-stream';
+		$size = filesize($absPath);
+		header('Content-Type: ' . $mime);
+		header('Content-Length: ' . $size);
+		header('Cache-Control: private, max-age=3600');
+		header('Content-Disposition: inline; filename="' . rawurlencode($fileArray['ORIGINAL_NAME'] ?? $fileArray['FILE_NAME'] ?? 'file') . '"');
+		readfile($absPath);
 		exit;
 	}
 
@@ -1184,8 +1218,11 @@ BX.ready(function () {
 		const msg = params.message;
 		const files = params.files || params.file;
 		if (files) mergeFiles(Array.isArray(files) ? files : Object.values(files));
-		if (msg && msg.id) appendMessages([msg], false);
-		else refreshTail().catch(() => {});
+		if (msg && msg.id) {
+			hydrateFilesFromMessages([msg]);
+			prefetchFileUrls(getFileIds(msg));
+			appendMessages([msg], false);
+		} else refreshTail().catch(() => {});
 		if (currentDialogId) rest('im.dialog.read', { DIALOG_ID: currentDialogId }).catch(() => {});
 		loadChatList();
 	}
@@ -1443,18 +1480,86 @@ BX.ready(function () {
 		}
 	}
 
+	function parseFileId(v) {
+		if (v == null || v === '') return 0;
+		if (typeof v === 'object') {
+			return parseFileId(v.id || v.ID || v.fileId || v.FILE_ID || v.diskFileId || v.objectId || v.objectid);
+		}
+		const s = String(v).trim();
+		const m = s.match(/^(?:n)?(\d+)$/i);
+		if (m) return parseInt(m[1], 10) || 0;
+		const n = parseInt(s, 10);
+		return isNaN(n) ? 0 : n;
+	}
+
+	function pickFirstUrl() {
+		for (let i = 0; i < arguments.length; i++) {
+			const v = arguments[i];
+			if (typeof v === 'string' && v.trim()) return v.trim();
+		}
+		return '';
+	}
+
+	function mediaPreviewUrl(media) {
+		if (!media || typeof media !== 'object') return '';
+		const preview = media.preview || media.Preview || media.sd || media.SD || '';
+		if (typeof preview === 'string') return preview;
+		if (preview && typeof preview === 'object') {
+			return preview['250'] || preview['500'] || preview['1000'] || pickFirstUrl.apply(null, Object.values(preview));
+		}
+		return pickFirstUrl(media.hd, media.HD, media.previewUrl);
+	}
+
+	function normalizeMediaKind(type, ext, name) {
+		let t = String(type || '').toLowerCase().trim();
+		if (t.indexOf('/') !== -1) t = t.split('/')[0]; // image/jpeg → image
+		const e = String(ext || '').toLowerCase();
+		const n = String(name || '').toLowerCase();
+		if (!t || t === 'file' || t === 'document') {
+			if (/^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(e)) t = 'image';
+			else if (/^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(e)) t = 'audio';
+			else if (/^(mp4|mov|avi|mkv)$/i.test(e)) t = 'video';
+			else if (/voice|audio_message|голос/i.test(n)) t = 'audio';
+			else if (e === 'webm') t = 'audio';
+		}
+		return t;
+	}
+
+	function absolutizePortalUrl(url) {
+		const s = pickFirstUrl(url);
+		if (!s) return '';
+		if (/^(https?:|blob:|data:)/i.test(s)) return s;
+		if (s.indexOf('//') === 0) return window.location.protocol + s;
+		if (s.charAt(0) === '/') return window.location.origin + s;
+		return s;
+	}
+
 	function normalizeFileRecord(raw, key) {
 		if (!raw) return null;
-		const id = parseInt(raw.id || raw.ID || raw.fileId || key, 10);
+		const viewer = raw.viewerAttrs || raw.viewerattrs || {};
+		const id = parseFileId(
+			raw.id || raw.ID || raw.fileId || raw.diskFileId ||
+			viewer.objectId || viewer.objectid || key
+		);
 		if (!id) return null;
-		const name = raw.name || raw.NAME || raw.originalName || ('file.' + (raw.extension || raw.EXTENSION || 'bin'));
-		const ext = String(raw.extension || raw.EXTENSION || name.split('.').pop() || '').toLowerCase();
-		let type = String(raw.type || raw.TYPE || raw.mediaType || '').toLowerCase();
-		if (!type && /^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(ext)) type = 'image';
-		const media = raw.mediaUrl || {};
-		const urlPreview = raw.urlPreview || raw.previewUrl || raw.previewImage || raw.urlPreviewDownload || media.sd || media.SD || '';
-		const urlShow = raw.urlShow || raw.showUrl || raw.viewUrl || raw.url || media.hd || media.HD || '';
-		const urlDownload = raw.urlDownload || raw.downloadUrl || raw.src || media.hd || media.HD || '';
+		const name = raw.name || raw.NAME || raw.originalName || raw.title ||
+			viewer.title || ('file.' + (raw.extension || raw.EXTENSION || 'bin'));
+		const ext = String(raw.extension || raw.EXTENSION || (String(name).split('.').pop() || '')).toLowerCase();
+		const type = normalizeMediaKind(raw.type || raw.TYPE || raw.mediaType || viewer.viewertype || viewer.viewerType, ext, name);
+		const media = raw.mediaUrl || raw.mediaurl || {};
+		// Bitrix REST часто отдаёт urlpreview/urlshow/urldownload в lowercase!
+		const urlPreview = absolutizePortalUrl(pickFirstUrl(
+			raw.urlPreview, raw.urlpreview, raw.previewUrl, raw.previewImage,
+			raw.urlPreviewDownload, mediaPreviewUrl(media), viewer.viewerResized, viewer.viewerresized
+		));
+		const urlShow = absolutizePortalUrl(pickFirstUrl(
+			raw.urlShow, raw.urlshow, raw.showUrl, raw.viewUrl, raw.url,
+			viewer.src, media.hd, media.HD, mediaPreviewUrl(media)
+		));
+		const urlDownload = absolutizePortalUrl(pickFirstUrl(
+			raw.urlDownload, raw.urldownload, raw.downloadUrl, raw.src,
+			viewer.src, media.hd, media.HD, urlShow, urlPreview
+		));
 		return {
 			id: id,
 			name: name,
@@ -1462,7 +1567,8 @@ BX.ready(function () {
 			type: type,
 			urlPreview: urlPreview,
 			urlShow: urlShow,
-			urlDownload: urlDownload
+			urlDownload: urlDownload,
+			isVoiceNote: !!(raw.isVoiceNote || raw.isvoicenote)
 		};
 	}
 
@@ -1483,21 +1589,62 @@ BX.ready(function () {
 		}
 	}
 
+	function msgParams(msg) {
+		return (msg && (msg.params || msg.PARAMS)) || {};
+	}
+
+	function hydrateFilesFromMessages(messages) {
+		(messages || []).forEach(function (msg) {
+			const p = msgParams(msg);
+			const viewer = p.viewerAttrs || p.viewerattrs || {};
+			const id = parseFileId(
+				p.objectId || p.objectid || p.FILE_ID || p.fileId ||
+				viewer.objectId || viewer.objectid
+			);
+			const src = pickFirstUrl(p.src, p.SRC, viewer.src);
+			const media = msg.mediaUrl || msg.mediaurl || {};
+			const preview = mediaPreviewUrl(media);
+			if (!id && !src && !preview) return;
+			const fid = id || parseFileId(viewer.objectId) || 0;
+			if (!fid) return;
+			const name = p.title || viewer.title || (msg.text || '').trim() || ('file.' + fid);
+			const ext = String(name.split('.').pop() || '').toLowerCase();
+			let type = normalizeMediaKind(viewer.viewertype || viewer.viewerType || '', ext, name);
+			if (msg.isVoiceNote || msg.isvoicenote) type = 'audio';
+			if (msg.isVideoNote || msg.isvideonote) type = 'video';
+			if (!type && (src || preview)) type = 'image';
+			const prev = filesMap[fid] || { id: fid };
+			filesMap[fid] = Object.assign(prev, {
+				id: fid,
+				name: prev.name || name,
+				extension: prev.extension || ext,
+				type: prev.type || type,
+				urlPreview: prev.urlPreview || absolutizePortalUrl(preview || src),
+				urlShow: prev.urlShow || absolutizePortalUrl(src || preview),
+				urlDownload: prev.urlDownload || absolutizePortalUrl(src || preview),
+				isVoiceNote: prev.isVoiceNote || !!(msg.isVoiceNote || msg.isvoicenote)
+			});
+		});
+	}
+
 	function getFileIds(msg) {
 		const ids = new Set();
-		const p = msg.params || {};
-		['FILE_ID', 'FILE', 'fileId', 'FILE_IDS'].forEach(function (key) {
+		const p = msgParams(msg);
+		['FILE_ID', 'FILE', 'fileId', 'FILE_IDS', 'objectId', 'objectid'].forEach(function (key) {
 			let val = p[key];
 			if (val == null || val === '') return;
 			if (!Array.isArray(val)) val = [val];
 			val.forEach(function (v) {
-				const id = parseInt(v, 10);
+				const id = parseFileId(v);
 				if (id) ids.add(id);
 			});
 		});
+		const viewer = p.viewerAttrs || p.viewerattrs || {};
+		const vid = parseFileId(viewer.objectId || viewer.objectid);
+		if (vid) ids.add(vid);
 		if (Array.isArray(msg.files)) {
 			msg.files.forEach(function (f) {
-				const id = parseInt((f && (f.id || f.ID)) || f, 10);
+				const id = parseFileId(f);
 				if (id) ids.add(id);
 			});
 		}
@@ -1520,7 +1667,7 @@ BX.ready(function () {
 
 	function isImageFileRecord(f) {
 		if (!f) return false;
-		const type = (f.type || '').toLowerCase();
+		const type = normalizeMediaKind(f.type, f.extension, f.name);
 		const ext = (f.extension || '').toLowerCase();
 		const name = (f.name || '').toLowerCase();
 		return type === 'image' || /^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(ext) ||
@@ -1564,7 +1711,7 @@ BX.ready(function () {
 
 	function isConnectorOperatorMessage(msg) {
 		if (isConnectorOperatorText(msg.text || '')) return true;
-		const p = msg.params || {};
+		const p = msgParams(msg);
 		// иногда Bitrix помечает исходящие через коннектор
 		if (p.CONNECTOR || p.FROM_CONNECTOR || p.IMOL_FORM || p.IMOL_COMMENT) return true;
 		return false;
@@ -1576,7 +1723,7 @@ BX.ready(function () {
 		const text = msg.text || '';
 		if (isConnectorOperatorMessage(msg)) return false;
 		if (getFileIds(msg).length) return false;
-		const p = msg.params || {};
+		const p = msgParams(msg);
 		const code = p.CODE;
 		if (code && (Array.isArray(code) ? code.length : true)) return true;
 		if (/начал работу с диалогом|завершил работу|диалог закрыт|перевед[её]н|поставил оценку|пригласил|покинул/i.test(text)) return true;
@@ -2020,7 +2167,8 @@ BX.ready(function () {
 	}
 
 	function isAudioMediaFile(f) {
-		const type = (f.type || '').toLowerCase();
+		if (!f) return false;
+		const type = normalizeMediaKind(f.type, f.extension, f.name);
 		const ext = (f.extension || '').toLowerCase();
 		const name = (f.name || '').toLowerCase();
 
@@ -2028,33 +2176,20 @@ BX.ready(function () {
 		if (type === 'audio') return true;
 		if (/^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(ext)) return true;
 		if (/voice|audio_message|голос/i.test(name)) return true;
-		if (ext === 'webm' && (type === 'audio' || type === 'file' || /voice|audio/.test(name))) return true;
-		// webm от микрофона — почти всегда аудио, не видео
 		if (ext === 'webm' && type !== 'video') return true;
-		if (ext === 'webm' && !(f.mediaUrl && (f.mediaUrl.hd || f.mediaUrl.sd))) return true;
 
 		return false;
 	}
 
 	function isVideoMediaFile(f) {
-		if (isAudioMediaFile(f)) return false;
-		const type = (f.type || '').toLowerCase();
+		if (!f || isAudioMediaFile(f)) return false;
+		const type = normalizeMediaKind(f.type, f.extension, f.name);
 		const ext = (f.extension || '').toLowerCase();
 		return type === 'video' || /^(mp4|mov|avi|mkv)$/i.test(ext);
 	}
 
-	function mediaElementHtml(fileId, tag, extraClass) {
-		return '<div class="wa-media">' +
-			'<' + tag + ' controls preload="metadata" class="wa-media-lazy' + (extraClass ? ' ' + extraClass : '') + '" ' +
-			'data-file-id="' + fileId + '"></' + tag + '>' +
-			'<div class="wa-media-loading">Загрузка...</div>' +
-			'</div>';
-	}
-
-	const failedMediaDownloads = new Set();
-
 	function waMediaProxyUrl(fileId) {
-		const id = parseInt(fileId, 10);
+		const id = parseFileId(fileId);
 		if (!id) return '';
 		const url = new URL(window.location.href);
 		url.search = '';
@@ -2067,121 +2202,69 @@ BX.ready(function () {
 		return url.toString();
 	}
 
-	async function resolveMediaUrl(fileId, directUrl) {
-		if (directUrl) return directUrl;
-		const id = parseInt(fileId, 10);
-		if (!id) return '';
-
-		const f = filesMap[id] || {};
-		const existing = f.urlShow || f.urlDownload || f.urlPreview || '';
-		if (existing) return existing;
-
-		if (failedMediaDownloads.has(id)) {
-			return waMediaProxyUrl(id);
-		}
-
-		// REST im.v2 / disk часто 400/401 — не спамим, сразу прокси сессии портала
-		failedMediaDownloads.add(id);
-		return waMediaProxyUrl(id);
-	}
-
-	async function bindLazyMedia(root) {
-		const scope = root || messagesEl;
-		const nodes = scope.querySelectorAll('audio.wa-media-lazy, video.wa-media-lazy, img.wa-img-lazy');
-
-		for (const el of nodes) {
-			if (el.dataset.bound === '1') continue;
-			el.dataset.bound = '1';
-
-			const fileId = parseInt(el.dataset.fileId, 10);
-			const f = filesMap[fileId] || {};
-			const direct = f.urlPreview || f.urlShow || f.urlDownload || '';
-			const loadingEl = el.parentElement && el.parentElement.querySelector('.wa-media-loading');
-			const isImg = el.tagName === 'IMG';
-
-			const setSrc = async (preferDirect) => {
-				let src = preferDirect ? direct : '';
-				if (!src) {
-					const f2 = filesMap[fileId] || {};
-					src = f2.urlShow || f2.urlDownload || f2.urlPreview || '';
-				}
-				if (!src) src = await resolveMediaUrl(fileId, '');
-				if (!src) {
-					if (isImg) {
-						el.style.display = 'none';
-						const link = el.parentElement && el.parentElement.querySelector('.wa-file-fallback');
-						if (link) link.style.display = 'inline-flex';
-					}
-					if (loadingEl) loadingEl.textContent = 'Не удалось загрузить';
-					return;
-				}
-				if (isImg) {
-					el.src = src;
-					el.dataset.full = src;
-					el.dataset.download = src;
-				} else {
-					el.src = src;
-				}
-				if (loadingEl) loadingEl.style.display = 'none';
-				el.classList.remove('wa-media-lazy', 'wa-img-lazy');
-			};
-
-			el.addEventListener('error', () => {
-				if (el.dataset.retried === '1') return;
-				el.dataset.retried = '1';
-				setSrc(false);
-			}, { once: true });
-
-			await setSrc(true);
-		}
+	function mediaElementHtml(fileId, tag, extraClass) {
+		const f = filesMap[fileId] || {};
+		const direct = f.urlShow || f.urlDownload || f.urlPreview || waMediaProxyUrl(fileId);
+		return '<div class="wa-media">' +
+			'<' + tag + ' controls preload="metadata" class="' + (extraClass || '') + '" ' +
+			'src="' + BX.util.htmlspecialchars(direct) + '" ' +
+			'data-file-id="' + fileId + '"></' + tag + '>' +
+			'</div>';
 	}
 
 	function renderImageHtml(id, f) {
-		const name = BX.util.htmlspecialchars((f && f.name) || ('file.' + id));
-		const preview = (f && (f.urlPreview || f.urlShow || f.urlDownload)) || '';
-		const show = (f && (f.urlShow || f.urlDownload || f.urlPreview)) || '';
-		const download = (f && (f.urlDownload || f.urlShow || f.urlPreview)) || '';
-		if (preview) {
-			return '<div class="wa-media"><img class="wa-lightbox-trigger" src="' + BX.util.htmlspecialchars(preview) +
-				'" data-full="' + BX.util.htmlspecialchars(show || preview) +
-				'" data-download="' + BX.util.htmlspecialchars(download || show || preview) +
-				'" alt="' + name + '" loading="lazy"></div>';
-		}
-		return '<div class="wa-media wa-media-unknown" data-file-id="' + id + '">' +
-			'<img class="wa-lightbox-trigger wa-img-lazy" data-file-id="' + id + '" alt="' + name + '" loading="lazy">' +
-			'<a class="wa-file-link wa-file-fallback" href="#" data-file-id="' + id + '" style="display:none">📎 ' + name + '</a>' +
-			'<div class="wa-media-loading">Загрузка...</div></div>';
+		const name = BX.util.htmlspecialchars((f && f.name) || ('фото #' + id));
+		const proxy = waMediaProxyUrl(id);
+		const preview = (f && (f.urlPreview || f.urlShow || f.urlDownload)) || proxy;
+		const show = (f && (f.urlShow || f.urlDownload || f.urlPreview)) || proxy;
+		const download = (f && (f.urlDownload || f.urlShow || f.urlPreview)) || proxy;
+		return '<div class="wa-media"><img class="wa-lightbox-trigger" src="' + BX.util.htmlspecialchars(preview) +
+			'" data-full="' + BX.util.htmlspecialchars(show) +
+			'" data-download="' + BX.util.htmlspecialchars(download) +
+			'" data-proxy="' + BX.util.htmlspecialchars(proxy) +
+			'" data-file-id="' + id + '" alt="' + name + '" loading="lazy"></div>';
 	}
 
 	function renderFilesHtml(msg) {
 		const ids = getFileIds(msg);
 		if (!ids.length) return '';
-		return ids.map(id => {
-			const f = filesMap[id];
-			if (f && isImageFileRecord(f)) {
+		return ids.map(function (id) {
+			const f = filesMap[id] || { id: id };
+			if (isAudioMediaFile(f)) return mediaElementHtml(id, 'audio', 'wa-voice');
+			if (isVideoMediaFile(f)) return mediaElementHtml(id, 'video');
+			// WA/OL: type часто пустой или file.* — по умолчанию превью картинки
+			if (isImageFileRecord(f) || !f.type || f.type === 'file' || f.type === 'document') {
 				return renderImageHtml(id, f);
 			}
-			if (!f) {
-				return renderImageHtml(id, null);
-			}
-			const name = BX.util.htmlspecialchars(f.name || ('file.' + (f.extension || '')));
-			const preview = f.urlPreview || f.urlShow || '';
-			const show = f.urlShow || f.urlDownload || preview;
-			const download = f.urlDownload || show;
-			const type = (f.type || '').toLowerCase();
-			const ext = (f.extension || '').toLowerCase();
-
-			if (type === 'image' || /^(jpe?g|png|gif|webp|bmp)$/i.test(ext)) {
-				return renderImageHtml(id, f);
-			}
-			if (isAudioMediaFile(f)) {
-				return mediaElementHtml(id, 'audio', 'wa-voice');
-			}
-			if (isVideoMediaFile(f)) {
-				return mediaElementHtml(id, 'video');
-			}
-			return '<div class="wa-media"><a class="wa-file-link" href="#" data-file-id="' + id + '">📎 ' + name + '</a></div>';
+			const name = BX.util.htmlspecialchars(f.name || ('файл #' + id));
+			const href = f.urlDownload || f.urlShow || f.urlPreview || waMediaProxyUrl(id);
+			return '<div class="wa-media"><a class="wa-file-link" href="' + BX.util.htmlspecialchars(href) +
+				'" target="_blank" rel="noopener" data-file-id="' + id + '">📎 ' + name + '</a></div>';
 		}).join('');
+	}
+
+	async function resolveMediaUrl(fileId, directUrl) {
+		if (directUrl) return directUrl;
+		const id = parseFileId(fileId);
+		if (!id) return '';
+		const f = filesMap[id] || {};
+		return f.urlShow || f.urlDownload || f.urlPreview || waMediaProxyUrl(id);
+	}
+
+	async function bindLazyMedia(root) {
+		const scope = root || messagesEl;
+		scope.querySelectorAll('img.wa-lightbox-trigger[data-proxy]').forEach(function (img) {
+			if (img.dataset.boundErr === '1') return;
+			img.dataset.boundErr = '1';
+			img.addEventListener('error', function () {
+				const proxy = img.dataset.proxy;
+				if (proxy && img.src !== proxy) {
+					img.src = proxy;
+					img.dataset.full = proxy;
+					img.dataset.download = proxy;
+				}
+			});
+		});
 	}
 
 	function renderMessage(msg) {
@@ -2436,11 +2519,12 @@ BX.ready(function () {
 				LIMIT: MESSAGES_PAGE
 			});
 			const messages = data.messages || [];
+			if (data.chat_id) currentChatId = data.chat_id;
 			mergeFiles(data.files);
+			hydrateFilesFromMessages(messages);
 			await prefetchFileUrls(collectFileIdsFromMessages(messages));
 			appendMessages(messages, true);
 			hasMoreHistory = messages.length >= MESSAGES_PAGE;
-			if (data.chat_id) currentChatId = data.chat_id;
 			rest('im.dialog.read', { DIALOG_ID: dialogId }).catch(() => {});
 		} catch (e) {
 			console.error(e);
@@ -2460,6 +2544,7 @@ BX.ready(function () {
 			});
 			const messages = data.messages || [];
 			mergeFiles(data.files);
+			hydrateFilesFromMessages(messages);
 			if (!messages.length) {
 				hasMoreHistory = false;
 				return;
@@ -2753,6 +2838,7 @@ BX.ready(function () {
 		});
 		const messages = data.messages || [];
 		mergeFiles(data.files);
+		hydrateFilesFromMessages(messages);
 		await prefetchFileUrls(collectFileIdsFromMessages(messages));
 		appendMessages(messages, false);
 	}

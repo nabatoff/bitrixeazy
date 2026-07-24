@@ -200,10 +200,13 @@ export async function getDialogMessages(dialogId, { limit = 40, firstId = 0, las
   if (lastId) params.LAST_ID = lastId;
   const data = await bx24Call('im.dialog.messages.get', params);
   const messages = Array.isArray(data?.messages) ? data.messages : [];
+  const sorted = messages.slice().sort((a, b) => Number(a.id) - Number(b.id));
+  let files = mergeFilesMap({}, data?.files || {});
+  files = hydrateFilesFromMessages(files, sorted);
   return {
-    messages: messages.slice().sort((a, b) => Number(a.id) - Number(b.id)),
+    messages: sorted,
     chatId: data?.chat_id || null,
-    files: data?.files || {},
+    files,
   };
 }
 
@@ -377,13 +380,66 @@ export function absolutizeBitrixUrl(url) {
 }
 
 /** Прокси медиа на портале (сессия Битрикс). REST download/disk на этом портале даёт 400/401. */
+export function parseFileId(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'object') {
+    return parseFileId(
+      v.id || v.ID || v.fileId || v.FILE_ID || v.diskFileId || v.objectId || v.objectid
+    );
+  }
+  const s = String(v).trim();
+  const m = s.match(/^(?:n)?(\d+)$/i);
+  if (m) return parseInt(m[1], 10) || 0;
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function pickFirstUrl(...vals) {
+  for (const v of vals) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return '';
+}
+
+function mediaPreviewUrl(media) {
+  if (!media || typeof media !== 'object') return '';
+  const preview = media.preview || media.Preview || media.sd || media.SD || '';
+  if (typeof preview === 'string') return preview;
+  if (preview && typeof preview === 'object') {
+    return (
+      preview['250'] ||
+      preview['500'] ||
+      preview['1000'] ||
+      pickFirstUrl(...Object.values(preview))
+    );
+  }
+  return pickFirstUrl(media.hd, media.HD, media.previewUrl);
+}
+
+function normalizeMediaKind(type, ext, name) {
+  let t = String(type || '')
+    .toLowerCase()
+    .trim();
+  if (t.includes('/')) t = t.split('/')[0];
+  const e = String(ext || '').toLowerCase();
+  const n = String(name || '').toLowerCase();
+  if (!t || t === 'file' || t === 'document') {
+    if (/^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(e)) t = 'image';
+    else if (/^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(e)) t = 'audio';
+    else if (/^(mp4|mov|avi|mkv)$/i.test(e)) t = 'video';
+    else if (/voice|audio_message|голос/i.test(n)) t = 'audio';
+    else if (e === 'webm') t = 'audio';
+  }
+  return t;
+}
+
 export function portalMediaProxyUrl(fileId, chatId = 0) {
-  const id = parseInt(fileId, 10);
+  const id = parseFileId(fileId);
   if (!id) return '';
   try {
     const url = new URL(CONTACT_CENTER_URL);
     url.searchParams.set('wa_media', String(id));
-    let cid = parseInt(chatId, 10);
+    let cid = parseFileId(chatId);
     if (!cid) {
       const d = String(chatId || '').replace(/^chat/i, '');
       cid = parseInt(d, 10) || 0;
@@ -400,7 +456,7 @@ export async function downloadFileUrl(dialogId, fileId, chatId = 0) {
 }
 
 /**
- * src: URL из messages.files → прокси КЦ (?wa_media=) на портале.
+ * src: URL из messages.files (часто urlpreview lowercase + signed disk URL) → иначе прокси КЦ.
  * Без im.v2.File.download / disk.file.get (400/401 spam).
  */
 export async function resolveMediaSrc(dialogId, fileId, file = null, chatId = 0) {
@@ -429,7 +485,7 @@ export async function resolveMediaSrc(dialogId, fileId, file = null, chatId = 0)
       }
     }
   } catch {
-    /* CORS — прямой URL (в popup КЦ same-origin ок) */
+    /* CORS — прямой URL (signed disk URL обычно ок без cookies) */
   }
   return { src: url, blobUrl: false, contentType: '' };
 }
@@ -442,30 +498,83 @@ export function guessMediaKind(file, contentType = '') {
   if (/\.(jpe?g|png|gif|webp|bmp|heic)(\?|$)/i.test(name)) return 'image';
   if (/\.(mp3|ogg|oga|wav|m4a|opus|aac|webm)(\?|$)/i.test(name)) return 'audio';
   if (/\.(mp4|mov|avi|mkv)(\?|$)/i.test(name)) return 'video';
+  // WA часто шлёт file. без типа — в чате это почти всегда фото
+  if (!file?.type || file.type === 'file') return 'image';
   return 'file';
 }
 
 export function normalizeFileRecord(raw, key) {
   if (!raw) return null;
-  const id = parseInt(raw.id || raw.ID || raw.fileId || key, 10);
+  const viewer = raw.viewerAttrs || raw.viewerattrs || {};
+  const id = parseFileId(
+    raw.id || raw.ID || raw.fileId || raw.diskFileId || viewer.objectId || viewer.objectid || key
+  );
   if (!id) return null;
-  const name = raw.name || raw.NAME || raw.originalName || `file.${raw.extension || 'bin'}`;
-  const ext = String(raw.extension || raw.EXTENSION || name.split('.').pop() || '').toLowerCase();
-  let type = String(raw.type || raw.TYPE || raw.mediaType || '').toLowerCase();
-  if (!type && /^(jpe?g|png|gif|webp|bmp|heic)$/i.test(ext)) type = 'image';
-  if (!type && /^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(ext)) type = 'audio';
-  if (!type && /^(mp4|mov|avi|mkv)$/i.test(ext)) type = 'video';
-  if ((!type || type === 'file') && /voice|audio_message|голос/i.test(name)) type = 'audio';
+  const name =
+    raw.name ||
+    raw.NAME ||
+    raw.originalName ||
+    raw.title ||
+    viewer.title ||
+    `file.${raw.extension || raw.EXTENSION || 'bin'}`;
+  const ext = String(
+    raw.extension || raw.EXTENSION || String(name).split('.').pop() || ''
+  ).toLowerCase();
+  const type = normalizeMediaKind(
+    raw.type || raw.TYPE || raw.mediaType || viewer.viewertype || viewer.viewerType,
+    ext,
+    name
+  );
+  const media = raw.mediaUrl || raw.mediaurl || {};
+  // Bitrix REST часто отдаёт urlpreview/urlshow/urldownload в lowercase
+  const urlPreview = absolutizeBitrixUrl(
+    pickFirstUrl(
+      raw.urlPreview,
+      raw.urlpreview,
+      raw.previewUrl,
+      raw.previewImage,
+      mediaPreviewUrl(media),
+      viewer.viewerResized,
+      viewer.viewerresized
+    )
+  );
+  const urlShow = absolutizeBitrixUrl(
+    pickFirstUrl(
+      raw.urlShow,
+      raw.urlshow,
+      raw.showUrl,
+      raw.viewUrl,
+      raw.url,
+      viewer.src,
+      media.hd,
+      media.HD,
+      mediaPreviewUrl(media)
+    )
+  );
+  const urlDownload = absolutizeBitrixUrl(
+    pickFirstUrl(
+      raw.urlDownload,
+      raw.urldownload,
+      raw.downloadUrl,
+      raw.src,
+      viewer.src,
+      media.hd,
+      media.HD,
+      urlShow,
+      urlPreview
+    )
+  );
   return {
     id,
     name,
     extension: ext,
     type,
-    urlPreview: absolutizeBitrixUrl(raw.urlPreview || raw.previewUrl || raw.previewImage || ''),
-    urlShow: absolutizeBitrixUrl(raw.urlShow || raw.showUrl || raw.viewUrl || raw.url || ''),
-    urlDownload: absolutizeBitrixUrl(raw.urlDownload || raw.downloadUrl || raw.src || ''),
-    mediaHd: absolutizeBitrixUrl((raw.mediaUrl && (raw.mediaUrl.hd || raw.mediaUrl.HD)) || ''),
-    mediaSd: absolutizeBitrixUrl((raw.mediaUrl && (raw.mediaUrl.sd || raw.mediaUrl.SD)) || ''),
+    urlPreview,
+    urlShow,
+    urlDownload,
+    mediaHd: absolutizeBitrixUrl(pickFirstUrl(media.hd, media.HD)),
+    mediaSd: absolutizeBitrixUrl(pickFirstUrl(media.sd, media.SD, mediaPreviewUrl(media))),
+    isVoiceNote: !!(raw.isVoiceNote || raw.isvoicenote),
   };
 }
 
@@ -486,21 +595,63 @@ export function mergeFilesMap(filesMap, files) {
   return next;
 }
 
+function msgParams(msg) {
+  return msg?.params || msg?.PARAMS || {};
+}
+
+/** Достаём URL/ID из самого сообщения (новый формат IM без files[]) */
+export function hydrateFilesFromMessages(filesMap, messages) {
+  let next = { ...filesMap };
+  (messages || []).forEach((msg) => {
+    const p = msgParams(msg);
+    const viewer = p.viewerAttrs || p.viewerattrs || {};
+    const id = parseFileId(
+      p.objectId || p.objectid || p.FILE_ID || p.fileId || viewer.objectId || viewer.objectid
+    );
+    const src = pickFirstUrl(p.src, p.SRC, viewer.src);
+    const media = msg.mediaUrl || msg.mediaurl || {};
+    const preview = mediaPreviewUrl(media);
+    if (!id) return;
+    const name = p.title || viewer.title || String(msg.text || '').trim() || `file.${id}`;
+    const ext = String(name.split('.').pop() || '').toLowerCase();
+    let type = normalizeMediaKind(viewer.viewertype || viewer.viewerType || '', ext, name);
+    if (msg.isVoiceNote || msg.isvoicenote) type = 'audio';
+    if (msg.isVideoNote || msg.isvideonote) type = 'video';
+    if (!type && (src || preview)) type = 'image';
+    const prev = next[id] || { id };
+    next[id] = {
+      ...prev,
+      id,
+      name: prev.name || name,
+      extension: prev.extension || ext,
+      type: prev.type || type,
+      urlPreview: prev.urlPreview || absolutizeBitrixUrl(preview || src),
+      urlShow: prev.urlShow || absolutizeBitrixUrl(src || preview),
+      urlDownload: prev.urlDownload || absolutizeBitrixUrl(src || preview),
+      isVoiceNote: prev.isVoiceNote || !!(msg.isVoiceNote || msg.isvoicenote),
+    };
+  });
+  return next;
+}
+
 export function getFileIds(msg) {
   const ids = new Set();
-  const p = msg?.params || {};
-  ['FILE_ID', 'FILE', 'fileId', 'FILE_IDS'].forEach((key) => {
+  const p = msgParams(msg);
+  ['FILE_ID', 'FILE', 'fileId', 'FILE_IDS', 'objectId', 'objectid'].forEach((key) => {
     let val = p[key];
     if (val == null || val === '') return;
     if (!Array.isArray(val)) val = [val];
     val.forEach((v) => {
-      const id = parseInt(v, 10);
+      const id = parseFileId(v);
       if (id) ids.add(id);
     });
   });
+  const viewer = p.viewerAttrs || p.viewerattrs || {};
+  const vid = parseFileId(viewer.objectId || viewer.objectid);
+  if (vid) ids.add(vid);
   if (Array.isArray(msg?.files)) {
     msg.files.forEach((f) => {
-      const id = parseInt((f && (f.id || f.ID)) || f, 10);
+      const id = parseFileId(f);
       if (id) ids.add(id);
     });
   }
@@ -513,14 +664,15 @@ export function getFileIds(msg) {
 
 export function isImageFile(f) {
   if (!f) return false;
-  const type = (f.type || '').toLowerCase();
+  const type = normalizeMediaKind(f.type, f.extension, f.name);
   const ext = (f.extension || '').toLowerCase();
   return type === 'image' || /^(jpe?g|png|gif|webp|bmp|heic)$/i.test(ext);
 }
 
 export function isAudioFile(f) {
   if (!f) return false;
-  const type = (f.type || '').toLowerCase();
+  if (f.isVoiceNote) return true;
+  const type = normalizeMediaKind(f.type, f.extension, f.name);
   const ext = (f.extension || '').toLowerCase();
   const name = (f.name || '').toLowerCase();
   if (type === 'audio') return true;
@@ -532,9 +684,9 @@ export function isAudioFile(f) {
 
 export function isVideoFile(f) {
   if (!f || isAudioFile(f)) return false;
-  const type = (f.type || '').toLowerCase();
+  const type = normalizeMediaKind(f.type, f.extension, f.name);
   const ext = (f.extension || '').toLowerCase();
-  return type === 'video' || /^(mp4|mov|avi|mkv|webm)$/i.test(ext);
+  return type === 'video' || /^(mp4|mov|avi|mkv)$/i.test(ext);
 }
 
 export function formatMessageTime(raw) {
