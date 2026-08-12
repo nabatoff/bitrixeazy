@@ -3950,12 +3950,15 @@ function olLineLeadsAttachChatToLeadTimeline($leadId, $chatId = 0)
 		$resolved = olLineLeadsResolveIds($realChatId);
 		$sessionId = (int)($resolved['sessionId'] ?? 0);
 		$assoc = $sessionId > 0 ? $sessionId : $realChatId;
-		$subject = 'Чат открытой линии';
+		$subject = 'Чат с клиентом';
 		$meta = olLineLeadsGetChatMeta($realChatId, $leadId);
 		if (!empty($meta['debug']['TITLE'])) {
-			$subject = 'Чат открытой линии - "' . $meta['debug']['TITLE'] . '"';
+			$subject = 'Чат с клиентом';
+			$descExtra = (string)$meta['debug']['TITLE'];
 		} elseif (!empty($meta['debug']['USER_CODE'])) {
-			$subject = 'Чат открытой линии - "' . $meta['debug']['USER_CODE'] . '"';
+			$descExtra = (string)$meta['debug']['USER_CODE'];
+		} else {
+			$descExtra = '';
 		}
 
 		$fields = [
@@ -3963,13 +3966,16 @@ function olLineLeadsAttachChatToLeadTimeline($leadId, $chatId = 0)
 			'PROVIDER_ID' => 'IMOPENLINES_SESSION',
 			'PROVIDER_TYPE_ID' => 'SESSION',
 			'SUBJECT' => $subject,
-			'COMPLETED' => 'Y',
+			// N → попадает в блок «Что нужно сделать» на мобилке (как на скрине)
+			'COMPLETED' => 'N',
 			'RESPONSIBLE_ID' => (int)($GLOBALS['USER'] ? $GLOBALS['USER']->GetID() : 1),
 			'AUTHOR_ID' => (int)($GLOBALS['USER'] ? $GLOBALS['USER']->GetID() : 1),
 			'OWNER_TYPE_ID' => $leadType,
 			'OWNER_ID' => $leadId,
 			'ASSOCIATED_ENTITY_ID' => $assoc,
-			'DESCRIPTION' => 'WA custom attach lead #' . $leadId . ' chat #' . $realChatId,
+			'DESCRIPTION' => trim('Чат открытой линии'
+				. ($descExtra !== '' ? (' - "' . $descExtra . '"') : '')
+				. ' (WhatsApp)'),
 			'DESCRIPTION_TYPE' => 1,
 			'DIRECTION' => 1,
 			'BINDINGS' => [
@@ -3996,6 +4002,19 @@ function olLineLeadsAttachChatToLeadTimeline($leadId, $chatId = 0)
 	}
 
 	$report['activityId'] = $actId;
+
+	// Существующую activity тоже покажем в «Что нужно сделать»
+	try {
+		\CCrmActivity::Update($actId, [
+			'COMPLETED' => 'N',
+			'SUBJECT' => 'Чат с клиентом',
+		], false, true, [
+			'REGISTER_SONET_EVENT' => false,
+			'SKIP_USER_FIELD_CHECK' => true,
+		]);
+	} catch (\Throwable $e) {
+		/* ignore */
+	}
 
 	try {
 		if (method_exists('CCrmActivity', 'ChangeOwner')) {
@@ -4070,6 +4089,267 @@ function olLineLeadsAttachChatToLeadTimeline($leadId, $chatId = 0)
 	}
 
 	olLineLeadsLog("attach timeline lead={$leadId} chat={$realChatId} act={$actId}");
+	$report['restAppPurged'] = olLineLeadsPurgeRestAppWaActivities($leadType, $leadId);
+	return $report;
+}
+
+/**
+ * Удалить REST_APP/WA_CC из таймлайна (на mobile не поддерживается).
+ *
+ * @return array{deleted: int[], count: int}
+ */
+function olLineLeadsPurgeRestAppWaActivities($ownerTypeId, $ownerId)
+{
+	$ownerTypeId = (int)$ownerTypeId;
+	$ownerId = (int)$ownerId;
+	$out = ['deleted' => [], 'count' => 0];
+	if ($ownerTypeId <= 0 || $ownerId <= 0 || !\Bitrix\Main\Loader::includeModule('crm')) {
+		return $out;
+	}
+
+	try {
+		$res = \CCrmActivity::GetList(
+			['ID' => 'DESC'],
+			[
+				'OWNER_TYPE_ID' => $ownerTypeId,
+				'OWNER_ID' => $ownerId,
+				'PROVIDER_ID' => 'REST_APP',
+				'CHECK_PERMISSIONS' => 'N',
+			],
+			false,
+			false,
+			['ID', 'PROVIDER_TYPE_ID', 'SUBJECT', 'DESCRIPTION']
+		);
+		while ($act = $res->Fetch()) {
+			$actId = (int)($act['ID'] ?? 0);
+			if ($actId <= 0) {
+				continue;
+			}
+			$ptype = (string)($act['PROVIDER_TYPE_ID'] ?? '');
+			$subj = (string)($act['SUBJECT'] ?? '');
+			$desc = (string)($act['DESCRIPTION'] ?? '');
+			$isWaCc = ($ptype === 'WA_CC')
+				|| (stripos($subj, 'WhatsApp чат') !== false && stripos($desc, 'контакт-центр') !== false)
+				|| (stripos($desc, 'WA custom') !== false);
+			if (!$isWaCc) {
+				continue;
+			}
+			try {
+				if (\CCrmActivity::Delete($actId, false)) {
+					$out['deleted'][] = $actId;
+				}
+			} catch (\Throwable $e) {
+				olLineLeadsLog("restapp purge act {$actId}: " . $e->getMessage());
+			}
+		}
+	} catch (\Throwable $e) {
+		olLineLeadsLog('restapp purge list: ' . $e->getMessage());
+	}
+
+	$out['count'] = count($out['deleted']);
+	if ($out['count'] > 0) {
+		olLineLeadsLog("restapp purge owner={$ownerTypeId}:{$ownerId} deleted=" . implode(',', $out['deleted']));
+	}
+	return $out;
+}
+
+/**
+ * @deprecated REST_APP в mobile-таймлайне не поддерживается — используй olLineLeadsPurgeRestAppWaActivities.
+ */
+function olLineLeadsAttachRestAppWaActivity($ownerTypeId, $ownerId, $chatId = 0, array $ids = [])
+{
+	return olLineLeadsPurgeRestAppWaActivities($ownerTypeId, $ownerId);
+}
+
+/**
+ * Привязать OL-чат к таймлайну сделки (карточка «Чат с клиентом»).
+ *
+ * @return array<string, mixed>
+ */
+function olLineLeadsAttachChatToDealTimeline($dealId, $chatId = 0)
+{
+	$dealId = (int)$dealId;
+	$chatId = (int)$chatId;
+	$report = [
+		'dealId' => $dealId,
+		'chatId' => 0,
+		'activityId' => 0,
+		'created' => false,
+		'bound' => false,
+		'error' => null,
+	];
+	if ($dealId <= 0) {
+		$report['error'] = 'bad_deal_id';
+		return $report;
+	}
+	if (!\Bitrix\Main\Loader::includeModule('crm')
+		|| !\Bitrix\Main\Loader::includeModule('im')
+		|| !\Bitrix\Main\Loader::includeModule('imopenlines')
+	) {
+		$report['error'] = 'modules';
+		return $report;
+	}
+
+	$dealType = class_exists('CCrmOwnerType') ? (int)\CCrmOwnerType::Deal : 2;
+	$deal = \CCrmDeal::GetByID($dealId, false);
+	$dealLeadId = is_array($deal) ? (int)($deal['LEAD_ID'] ?? 0) : 0;
+	if ($chatId <= 0) {
+		$chats = [];
+		try {
+			if (class_exists('\Bitrix\ImOpenLines\Crm\Common')
+				&& method_exists('\Bitrix\ImOpenLines\Crm\Common', 'getChatsByEntity')
+			) {
+				$list = \Bitrix\ImOpenLines\Crm\Common::getChatsByEntity('DEAL', $dealId);
+				if (is_array($list)) {
+					foreach ($list as $row) {
+						$cid = (int)($row['CHAT_ID'] ?? $row['ID'] ?? $row);
+						if ($cid > 0) {
+							$chats[] = $cid;
+						}
+					}
+				}
+			}
+		} catch (\Throwable $e) {
+			/* ignore */
+		}
+		if ($chats) {
+			$chatId = (int)$chats[0];
+		}
+	}
+	if ($chatId <= 0) {
+		$leadId = $dealLeadId;
+		if ($leadId > 0) {
+			$leadReport = olLineLeadsAttachChatToLeadTimeline($leadId, 0);
+			if (!empty($leadReport['chatId'])) {
+				$chatId = (int)$leadReport['chatId'];
+			}
+			if (!empty($leadReport['activityId'])) {
+				// перенесём binding на сделку ниже
+				$report['fromLeadActivity'] = (int)$leadReport['activityId'];
+			}
+		}
+	}
+	$report['chatId'] = $chatId;
+	if ($chatId <= 0) {
+		$report['error'] = 'no_chat';
+		return $report;
+	}
+
+	$realChatId = olLineLeadsResolveRealChatId($chatId) ?: $chatId;
+	$report['chatId'] = $realChatId;
+	$assocIds = olLineLeadsChatAssocIds($realChatId);
+	$actId = (int)($report['fromLeadActivity'] ?? 0);
+
+	if ($actId <= 0) {
+		try {
+			foreach ($assocIds as $assoc) {
+				$res = \CCrmActivity::GetList(
+					['ID' => 'DESC'],
+					['ASSOCIATED_ENTITY_ID' => $assoc, 'CHECK_PERMISSIONS' => 'N'],
+					false,
+					['nTopCount' => 20],
+					['ID', 'PROVIDER_ID', 'PROVIDER_TYPE_ID', 'SUBJECT']
+				);
+				while ($act = $res->Fetch()) {
+					if (!olLineLeadsActivityLooksLikeOpenLine($act)) {
+						continue;
+					}
+					$actId = (int)$act['ID'];
+					break 2;
+				}
+			}
+		} catch (\Throwable $e) {
+			/* ignore */
+		}
+	}
+
+	if ($actId <= 0) {
+		$resolved = olLineLeadsResolveIds($realChatId);
+		$sessionId = (int)($resolved['sessionId'] ?? 0);
+		$assoc = $sessionId > 0 ? $sessionId : $realChatId;
+		$fields = [
+			'TYPE_ID' => 6,
+			'PROVIDER_ID' => 'IMOPENLINES_SESSION',
+			'PROVIDER_TYPE_ID' => 'SESSION',
+			'SUBJECT' => 'Чат с клиентом',
+			'COMPLETED' => 'N',
+			'RESPONSIBLE_ID' => (int)($GLOBALS['USER'] ? $GLOBALS['USER']->GetID() : 1),
+			'AUTHOR_ID' => (int)($GLOBALS['USER'] ? $GLOBALS['USER']->GetID() : 1),
+			'OWNER_TYPE_ID' => $dealType,
+			'OWNER_ID' => $dealId,
+			'ASSOCIATED_ENTITY_ID' => $assoc,
+			'DESCRIPTION' => 'Чат открытой линии (WhatsApp) deal #' . $dealId,
+			'DESCRIPTION_TYPE' => 1,
+			'DIRECTION' => 1,
+			'BINDINGS' => [
+				['OWNER_TYPE_ID' => $dealType, 'OWNER_ID' => $dealId],
+			],
+		];
+		try {
+			$actId = (int)\CCrmActivity::Add($fields, false, true, [
+				'REGISTER_SONET_EVENT' => true,
+				'SKIP_USER_FIELD_CHECK' => true,
+			]);
+			$report['created'] = $actId > 0;
+		} catch (\Throwable $e) {
+			$report['error'] = 'activity_add: ' . $e->getMessage();
+			return $report;
+		}
+	}
+
+	$report['activityId'] = $actId;
+	try {
+		\CCrmActivity::Update($actId, [
+			'COMPLETED' => 'N',
+			'SUBJECT' => 'Чат с клиентом',
+			'OWNER_TYPE_ID' => $dealType,
+			'OWNER_ID' => $dealId,
+		], false, true, [
+			'REGISTER_SONET_EVENT' => false,
+			'SKIP_USER_FIELD_CHECK' => true,
+		]);
+		if (method_exists('CCrmActivity', 'ChangeOwner')) {
+			\CCrmActivity::ChangeOwner($actId, $dealType, $dealId);
+		}
+	} catch (\Throwable $e) {
+		/* ignore */
+	}
+
+	if (class_exists('\Bitrix\Crm\ActivityBindingTable')) {
+		try {
+			$exists = \Bitrix\Crm\ActivityBindingTable::getList([
+				'filter' => [
+					'=ACTIVITY_ID' => $actId,
+					'=OWNER_TYPE_ID' => $dealType,
+					'=OWNER_ID' => $dealId,
+				],
+				'limit' => 1,
+			])->fetch();
+			if (!$exists) {
+				\Bitrix\Crm\ActivityBindingTable::add([
+					'ACTIVITY_ID' => $actId,
+					'OWNER_TYPE_ID' => $dealType,
+					'OWNER_ID' => $dealId,
+				]);
+			}
+			$report['bound'] = true;
+		} catch (\Throwable $e) {
+			/* ignore */
+		}
+	}
+
+	try {
+		if (class_exists('\Bitrix\ImOpenLines\Crm\Common') && method_exists('\Bitrix\ImOpenLines\Crm\Common', 'bind')) {
+			\Bitrix\ImOpenLines\Crm\Common::bind($realChatId, [
+				['ENTITY_TYPE_ID' => $dealType, 'ENTITY_ID' => $dealId],
+			]);
+		}
+	} catch (\Throwable $e) {
+		/* ignore */
+	}
+
+	olLineLeadsLog("attach timeline deal={$dealId} chat={$realChatId} act={$actId}");
+	$report['restAppPurged'] = olLineLeadsPurgeRestAppWaActivities($dealType, $dealId);
 	return $report;
 }
 

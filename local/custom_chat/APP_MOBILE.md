@@ -1,33 +1,35 @@
 # WhatsApp в мобильном Bitrix24
 
-## Белый экран из меню
+## Почему был белый экран
 
-Причина: `ShowHead()` / Bitrix JS делают frame-bust внутри WebView → пустой экран.
+Галка **«Поддерживает BitrixMobile»** обязательна (иначе пункта нет в меню телефона).
 
-Фикс: зелёная оболочка + iframe с one-time `wa_tok`, КЦ без `ShowHead`.
+Но в **обработчике** локального приложения **нельзя** делать:
+```php
+require .../prolog_before.php;
+```
+На iOS/Bitrix WebView это → белый экран (известная тема на форуме Битрикс).  
+`ping` с prolog тоже был белый — не баг ping.
 
-Залей и переустанови:
-- `app/shell.php` (новый)
-- `app/index.php`, `placement.php`, `auth.php`, `config.php`, `install.php`
-- `index.php`
+## Как сейчас устроено
 
-Ожидай: зелёная шапка «WhatsApp чат · user #…» и список чатов под ней.  
-Если жёлтая ошибка — пришли текст.
+1. `app/index.php` / `placement.php` — **без prolog**
+2. `user.current` по `AUTH_ID` (REST)
+3. one-time `wa_tok` → `location.replace` на `/local/custom_chat/?wa_embed=1&wa_mobile=1&wa_tok=…`
+4. КЦ — обычная страница портала (prolog там ок)
 
-## Чат в таймлайне сделки/лида на мобилке
+Галка BitrixMobile — **оставить**. Desktop — iframe с тем же tok.
 
-Native карточка CRM на телефоне **не** веб. Вкладки `DETAIL_TAB` часто не рисуются.
+## Залей
 
-Что можно:
+- `app/auth.php`, `app/shell.php`, `app/index.php`, `app/placement.php`, `app/ping.php`
+- `index.php` (consume `wa_tok`)
 
-| Placement | Где | Mobile |
-|-----------|-----|--------|
-| `CRM_*_DETAIL_ACTIVITY` | зона дел/таймлайна в карточке | иногда (после переустановки) |
-| `CRM_*_LIST_MENU` | ⋯ в списке сделок/лидов | чаще |
-| Меню приложений | WhatsApp чат | основной путь |
+Проверка с телефона: должно мелькнуть зелёное «Открываю…» и список чатов.
 
-**Встроить полный WA-UI прямо строкой в ленту таймлайна** (как запись «Комментарий») — нельзя тем же виджетом: таймлайн показывает CRM-события. Можно только:
-1. виджет ACTIVITY в карточке (если клиент поддерживает), или  
-2. запись в таймлайне-ссылку «Открыть WhatsApp» (отдельная фича).
+Диагностика без смены handler: временно handler → `.../app/ping.php` (теперь без prolog, зелёный JSON).
 
-После переустановки install повесит `DETAIL_ACTIVITY` + `LIST_MENU`. На телефоне проверь: сделка → блок активностей / ⋯ у сделки в списке.
+## Таймлайн
+
+Placement ≠ запись в ленте. Старые лиды:  
+`/local/custom_chat/ol_line_leads_run.php?leadId=332315&timeline=1`

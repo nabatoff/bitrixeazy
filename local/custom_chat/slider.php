@@ -34,7 +34,19 @@ if ($dialogId !== '') {
 // флаг для КЦ: мы во вложенном iframe слайдера
 $q['wa_embed'] = '1';
 
+$ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+$isMobileUa = ($ua !== '' && preg_match('/BitrixMobile|BXMobileApp|Bitrix24\.Mobile|Android|iPhone|iPad/i', $ua));
 $inner = '/local/custom_chat/';
+if ($isMobileUa) {
+	$q['wa_mobile'] = '1';
+	$q['wa_noprolog'] = '1';
+	$tokFile = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/shell.php';
+	if (is_file($tokFile)) {
+		require_once $tokFile;
+		$q['wa_tok'] = waCcAppIssueToken((int)$USER->GetID());
+	}
+	$inner = '/local/custom_chat/mobile.php';
+}
 if ($q) {
 	$inner .= '?' . http_build_query($q);
 }

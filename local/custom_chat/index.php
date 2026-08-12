@@ -295,80 +295,168 @@ $waMobile = isset($_GET['wa_mobile']) && (string)$_GET['wa_mobile'] === '1';
 $waTok = isset($_GET['wa_tok']) ? (string)$_GET['wa_tok'] : '';
 // deeplink из карточки сделки/лида на телефоне — сразу экран чата
 $waDealLeadDeep = (!empty($_GET['dealId']) || !empty($_GET['leadId']));
+$waCrmLeadId = (int)($_GET['leadId'] ?? $_GET['LEAD_ID'] ?? 0);
+$waCrmDealId = (int)($_GET['dealId'] ?? $_GET['DEAL_ID'] ?? 0);
+if ($waCrmLeadId <= 0 && !empty($GLOBALS['WA_CC_CRM_LEAD_ID'])) {
+	$waCrmLeadId = (int)$GLOBALS['WA_CC_CRM_LEAD_ID'];
+}
+if ($waCrmDealId <= 0 && !empty($GLOBALS['WA_CC_CRM_DEAL_ID'])) {
+	$waCrmDealId = (int)$GLOBALS['WA_CC_CRM_DEAL_ID'];
+}
 
 if ($waEmbed) {
 	// Вложенный iframe / локальное app: без шаблона Bitrix24 (иначе SearchTitle / frame-bust)
-	if (!defined('B_PROLOG_INCLUDED')) {
-		if (!defined('NO_KEEP_STATISTIC')) {
-			define('NO_KEEP_STATISTIC', true);
-		}
-		if (!defined('NO_AGENT_CHECK')) {
-			define('NO_AGENT_CHECK', true);
-		}
-		if (!defined('NOT_CHECK_PERMISSIONS')) {
-			define('NOT_CHECK_PERMISSIONS', false);
-		}
-		require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
-	}
+	$waNoProlog = defined('WA_CC_MOBILE_NOPROLOG')
+		|| (isset($_GET['wa_noprolog']) && (string)$_GET['wa_noprolog'] === '1')
+		|| (isset($_REQUEST['wa_noprolog']) && (string)$_REQUEST['wa_noprolog'] === '1');
+	$waAid = (string)($_GET['wa_aid'] ?? $_REQUEST['wa_aid'] ?? '');
+	$currentUserId = 0;
+	$currentUserName = '';
 
-	global $USER, $APPLICATION;
-
-	// one-time token из app/shell (мобильный iframe без cookie)
-	if ($waTok !== '' && (!$USER || !$USER->IsAuthorized())) {
+	if ($waNoProlog) {
+		// BitrixMobile WebView: prolog = белый экран. Юзера берём из tok / GLOBALS.
 		$tokFile = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/shell.php';
-		if (is_file($tokFile)) {
+		$authFile = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/auth.php';
+		if ($waTok !== '' && is_file($tokFile)) {
 			require_once $tokFile;
-			$tokUserId = waCcAppConsumeToken($waTok);
-			if ($tokUserId > 0 && is_object($USER) && method_exists($USER, 'Authorize')) {
-				try {
-					$USER->Authorize($tokUserId); // CUser::Authorize
-				} catch (\Throwable $e) {
-					/* ignore */
+			$currentUserId = (int)waCcAppConsumeToken($waTok);
+		}
+		if ($currentUserId <= 0 && !empty($GLOBALS['WA_CC_FORCED_USER_ID'])) {
+			$currentUserId = (int)$GLOBALS['WA_CC_FORCED_USER_ID'];
+		}
+		if ($waAid === '' && !empty($GLOBALS['WA_CC_AID'])) {
+			$waAid = (string)$GLOBALS['WA_CC_AID'];
+		}
+		if ($currentUserId <= 0 && $waAid !== '' && is_file($authFile)) {
+			require_once $authFile;
+			$_REQUEST['AUTH_ID'] = $waAid;
+			$_REQUEST['auth'] = $waAid;
+			$resolved = waCcAppResolveUserIdNoProlog();
+			if (!empty($resolved['ok'])) {
+				$currentUserId = (int)$resolved['userId'];
+			}
+		}
+		if ($currentUserId <= 0) {
+			http_response_code(200);
+			header('Content-Type: text/html; charset=utf-8');
+			echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+				. '<title>WhatsApp</title></head><body style="font:15px system-ui;padding:20px;background:#fff3cd">'
+				. '<b>Auth required (noprolog)</b><br>Нет userId из wa_tok.'
+				. '</body></html>';
+			die();
+		}
+		$currentUserName = '';
+		if ($waAid !== '' && is_file($authFile)) {
+			require_once $authFile;
+			$domain = (string)($_GET['DOMAIN'] ?? $_REQUEST['DOMAIN'] ?? $_SERVER['HTTP_HOST'] ?? '');
+			$domain = preg_replace('#^https?://#i', '', $domain);
+			$domain = preg_replace('/:(443|80)$/', '', $domain);
+			$res = waCcAppRestCallAuth('https', $domain, $waAid, 'user.current');
+			if (!empty($res['ok']) && is_array($res['result'])) {
+				$u = $res['result'];
+				if ($currentUserId <= 0) {
+					$currentUserId = (int)($u['ID'] ?? $u['id'] ?? 0);
+				}
+				$currentUserName = trim(implode(' ', array_filter([
+					(string)($u['NAME'] ?? ''),
+					(string)($u['LAST_NAME'] ?? ''),
+				])));
+				if ($currentUserName === '') {
+					$currentUserName = trim((string)($u['LOGIN'] ?? $u['EMAIL'] ?? ''));
 				}
 			}
 		}
-	}
-
-	if (!$USER || !$USER->IsAuthorized()) {
-		http_response_code(200);
-		header('Content-Type: text/html; charset=utf-8');
-		echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-			. '<title>WhatsApp</title></head><body style="font:15px system-ui;padding:20px;background:#fff3cd">'
-			. '<b>Auth required</b><br>Нет сессии портала. Открой WhatsApp чат из меню приложения Bitrix24.'
-			. '</body></html>';
-		die();
-	}
-
-	if (class_exists('\\Bitrix\\Main\\Context')) {
-		try {
-			$resp = \Bitrix\Main\Context::getCurrent()->getResponse();
-			$headers = $resp->getHeaders();
-			$headers->delete('X-Frame-Options');
-			$headers->set(
-				'Content-Security-Policy',
-				"frame-ancestors 'self' https://crm.artflowers.kz https://bitrixeazy.vercel.app https://*.vercel.app"
-			);
-		} catch (\Throwable $e) {
-			/* ignore */
+		if ($currentUserName === '') {
+			$currentUserName = 'User #' . $currentUserId;
 		}
-	}
+		$APPLICATION = null;
+		$USER = null;
+	} else {
+		if (!defined('B_PROLOG_INCLUDED')) {
+			if (!defined('NO_KEEP_STATISTIC')) {
+				define('NO_KEEP_STATISTIC', true);
+			}
+			if (!defined('NO_AGENT_CHECK')) {
+				define('NO_AGENT_CHECK', true);
+			}
+			if (!defined('NOT_CHECK_PERMISSIONS')) {
+				define('NOT_CHECK_PERMISSIONS', false);
+			}
+			require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+		}
 
-	// На mobile/app НЕ вызываем ShowHead/Extension — frame-bust → белый экран в WebView
-	$waLiteHead = $waMobile || $waTok !== '' || defined('WA_CC_APP_BOOT');
-	if (!$waLiteHead) {
-		if (class_exists('\\Bitrix\\Main\\UI\\Extension')) {
+		global $USER, $APPLICATION;
+
+		// one-time token из app/shell (+ запасной AUTH_ID)
+		if (!$USER || !$USER->IsAuthorized()) {
+			$tokFile = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/shell.php';
+			$authFile = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/auth.php';
+			if ($waTok !== '' && is_file($tokFile)) {
+				require_once $tokFile;
+				$tokUserId = waCcAppConsumeToken($waTok);
+				if ($tokUserId > 0 && is_object($USER) && method_exists($USER, 'Authorize')) {
+					try {
+						$USER->Authorize($tokUserId);
+					} catch (\Throwable $e) {
+						/* ignore */
+					}
+				}
+			}
+			if ((!$USER || !$USER->IsAuthorized()) && is_file($authFile)) {
+				require_once $authFile;
+				$aid = (string)($_GET['wa_aid'] ?? $_REQUEST['wa_aid'] ?? $_REQUEST['AUTH_ID'] ?? '');
+				if ($aid !== '' && function_exists('waCcAppRestCallAuth')) {
+					$domain = (string)($_GET['DOMAIN'] ?? $_REQUEST['DOMAIN'] ?? $_SERVER['HTTP_HOST'] ?? '');
+					$domain = preg_replace('#^https?://#i', '', $domain);
+					$domain = preg_replace('/:(443|80)$/', '', $domain);
+					$scheme = 'https';
+					$res = waCcAppRestCallAuth($scheme, $domain, $aid, 'user.current');
+					$uid = 0;
+					if (!empty($res['ok']) && is_array($res['result'])) {
+						$uid = (int)($res['result']['ID'] ?? $res['result']['id'] ?? 0);
+					}
+					if ($uid > 0 && is_object($USER) && method_exists($USER, 'Authorize')) {
+						try {
+							$USER->Authorize($uid);
+						} catch (\Throwable $e) {
+							/* ignore */
+						}
+					}
+				}
+			}
+		}
+
+		if (!$USER || !$USER->IsAuthorized()) {
+			http_response_code(200);
+			header('Content-Type: text/html; charset=utf-8');
+			echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+				. '<title>WhatsApp</title></head><body style="font:15px system-ui;padding:20px;background:#fff3cd">'
+				. '<b>Auth required</b><br>Нет сессии портала / битый wa_tok. Открой WhatsApp чат из меню приложения Bitrix24.'
+				. '<pre style="margin-top:12px;font-size:11px;white-space:pre-wrap">'
+				. htmlspecialchars(json_encode([
+					'has_tok' => $waTok !== '',
+					'has_aid' => !empty($_GET['wa_aid']) || !empty($_REQUEST['AUTH_ID']),
+					'ua' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 160),
+				], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
+				. '</pre></body></html>';
+			die();
+		}
+
+		if (class_exists('\\Bitrix\\Main\\Context')) {
 			try {
-				\Bitrix\Main\UI\Extension::load(['main.core', 'rest.client', 'pull.client', 'ui.notification']);
+				$resp = \Bitrix\Main\Context::getCurrent()->getResponse();
+				$headers = $resp->getHeaders();
+				$headers->delete('X-Frame-Options');
+				$headers->set(
+					'Content-Security-Policy',
+					"frame-ancestors 'self' https://crm.artflowers.kz https://bitrixeazy.vercel.app https://*.vercel.app"
+				);
 			} catch (\Throwable $e) {
 				/* ignore */
 			}
 		}
-		CJSCore::Init(['ajax', 'rest', 'pull', 'popup']);
-	}
 
-	$currentUserId = (int)$USER->GetID();
-	$currentUserName = '';
-	if ($USER) {
+		$currentUserId = (int)$USER->GetID();
 		if (method_exists($USER, 'GetFormattedName')) {
 			$currentUserName = trim((string)$USER->GetFormattedName());
 		}
@@ -378,6 +466,23 @@ if ($waEmbed) {
 		if ($currentUserName === '') {
 			$currentUserName = trim((string)$USER->GetLogin());
 		}
+	}
+
+	if (!headers_sent()) {
+		header('Content-Type: text/html; charset=UTF-8');
+	}
+
+	// На mobile/app НЕ вызываем ShowHead/Extension — frame-bust → белый экран в WebView
+	$waLiteHead = $waMobile || $waTok !== '' || $waNoProlog || defined('WA_CC_APP_BOOT');
+	if (!$waLiteHead) {
+		if (class_exists('\\Bitrix\\Main\\UI\\Extension')) {
+			try {
+				\Bitrix\Main\UI\Extension::load(['main.core', 'rest.client', 'pull.client', 'ui.notification']);
+			} catch (\Throwable $e) {
+				/* ignore */
+			}
+		}
+		CJSCore::Init(['ajax', 'rest', 'pull', 'popup']);
 	}
 	$bodyClass = 'wa-cc-embed';
 	$waDesktop = isset($_GET['wa_desktop']) && (string)$_GET['wa_desktop'] === '1';
@@ -419,7 +524,12 @@ if ($waEmbed) {
 			'embed' => true,
 			'appBoot' => defined('WA_CC_APP_BOOT'),
 			'userId' => (int)$currentUserId,
+			'noprolog' => (bool)$waNoProlog,
+			'crmLeadId' => (int)$waCrmLeadId,
+			'crmDealId' => (int)$waCrmDealId,
 		], JSON_UNESCAPED_UNICODE) ?>;
+		window.__WA_AID = <?= json_encode((string)$waAid, JSON_UNESCAPED_UNICODE) ?>;
+		window.__WA_NOPROLOG = <?= !empty($waNoProlog) ? 'true' : 'false' ?>;
 		window.waCcParams = function () {
 			var sp = new URLSearchParams(window.location.search || '');
 			var boot = window.__WA_CC_QUERY || {};
@@ -437,6 +547,9 @@ if ($waEmbed) {
 		<script src="/bitrix/js/main/core/core.min.js?v=wa1"></script>
 		<script src="/bitrix/js/main/ajax/ajax.min.js?v=wa1"></script>
 		<script src="/bitrix/js/rest/client/rest.client.min.js?v=wa1"></script>
+		<?php if ($waMobile): ?>
+		<script src="/bitrix/js/mobileapp/mobile.js?v=wa1"></script>
+		<?php endif; ?>
 		<script>
 			(function(){
 				try {
@@ -867,6 +980,42 @@ if ($waEmbed) {
 .wa-msg .wa-media audio.wa-voice { min-width: 240px; height: 36px; }
 .wa-msg .wa-media .wa-media-loading { font-size: 13px; color: var(--wa-muted); padding: 6px 0; }
 .wa-msg .wa-file-link { display: inline-flex; align-items: center; gap: 6px; color: #027eb5; text-decoration: none; word-break: break-all; }
+.wa-msg-quote {
+	display: block;
+	border-left: 3px solid #06cf9c;
+	background: rgba(0,0,0,.04);
+	border-radius: 6px;
+	padding: 6px 10px;
+	margin-bottom: 6px;
+	font-size: 12.5px;
+	line-height: 1.35;
+	color: var(--wa-muted);
+}
+.wa-msg.out .wa-msg-quote { border-left-color: #1a7f4c; }
+.wa-msg-quote-author { display: block; font-weight: 600; color: #06cf9c; margin-bottom: 2px; }
+.wa-msg.out .wa-msg-quote-author { color: #1a7f4c; }
+.wa-reply-bar {
+	display: none;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	background: #f0f2f5;
+	border-top: 1px solid var(--wa-border);
+	border-left: 3px solid var(--wa-teal);
+}
+.wa-reply-bar.visible { display: flex; }
+.wa-reply-preview { flex: 1; min-width: 0; }
+.wa-reply-author { display: block; font-size: 12px; font-weight: 600; color: var(--wa-teal-dark); }
+.wa-reply-text { display: block; font-size: 13px; color: var(--wa-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wa-reply-cancel {
+	border: none;
+	background: transparent;
+	font-size: 22px;
+	line-height: 1;
+	color: var(--wa-muted);
+	padding: 4px 8px;
+	cursor: pointer;
+}
 .wa-empty {
 	color: var(--wa-muted);
 	text-align: center;
@@ -1189,6 +1338,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 					<svg viewBox="0 0 24 24" fill="currentColor"><path d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817-.011 7.912z"/></svg>
 				</button>
 			</div>
+			<div class="wa-reply-bar" id="wa-reply-bar">
+				<div class="wa-reply-preview">
+					<span class="wa-reply-author" id="wa-reply-author"></span>
+					<span class="wa-reply-text" id="wa-reply-text"></span>
+				</div>
+				<button type="button" class="wa-reply-cancel" id="wa-reply-cancel" title="Отменить ответ" aria-label="Отменить">×</button>
+			</div>
 			<div class="wa-input-bar" id="wa-input-bar">
 				<button type="button" class="wa-icon-btn" id="wa-attach" title="Прикрепить файл">
 					<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
@@ -1213,6 +1369,26 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 <script>
 (function waCcBoot(startFn) {
+	if (window.__WA_NOPROLOG) {
+		function go() {
+			try {
+				startFn();
+			} catch (e) {
+				console.error('WA CC boot', e);
+				var el = document.getElementById('wa-chat-list');
+				if (el) {
+					el.innerHTML = '<div style="padding:16px;color:#c62828;font:14px system-ui">'
+						+ 'Ошибка загрузки чата: ' + (e && e.message ? e.message : e) + '</div>';
+				}
+			}
+		}
+		if (document.readyState === 'loading') {
+			document.addEventListener('DOMContentLoaded', go);
+		} else {
+			go();
+		}
+		return;
+	}
 	var tries = 0;
 	function run() {
 		if (typeof window.BX !== 'undefined' && typeof BX.ready === 'function') {
@@ -1242,7 +1418,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	run();
 })(function () {
 	const CURRENT_USER_ID = <?= (int)$currentUserId ?>;
-	const CURRENT_USER_NAME = <?= json_encode((string)($currentUserName ?? ''), JSON_UNESCAPED_UNICODE) ?>;
+	let CURRENT_USER_NAME = <?= json_encode((string)($currentUserName ?? ''), JSON_UNESCAPED_UNICODE) ?>;
 	const CLOSED_LINE_STATUSES = [50, 60, 70, 80];
 	const MESSAGES_PAGE = 80;
 	let currentDialogId = null;
@@ -1252,6 +1428,93 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let currentChatData = null;
 	let sessionState = { needsAnswer: false, canFinish: false, isClosed: false };
 	let crmBindings = { leadId: 0, dealId: 0 };
+	/** Лид/сделка из placement (?leadId= / ?dealId=) — приоритет над entity_data_2 чата */
+	let crmContextLeadId = <?= (int)$waCrmLeadId ?>;
+	let crmContextDealId = <?= (int)$waCrmDealId ?>;
+	(function initCrmContextFromQuery() {
+		try {
+			const boot = window.__WA_CC_BOOT || {};
+			if (parseInt(boot.crmLeadId, 10) > 0) crmContextLeadId = parseInt(boot.crmLeadId, 10);
+			if (parseInt(boot.crmDealId, 10) > 0) crmContextDealId = parseInt(boot.crmDealId, 10);
+			const sp = (typeof window.waCcParams === 'function')
+				? window.waCcParams()
+				: new URLSearchParams(window.location.search);
+			const parseId = function (v) {
+				if (v == null || v === '') return 0;
+				const m = String(v).trim().match(/(\d{1,12})/);
+				return m ? (parseInt(m[1], 10) || 0) : 0;
+			};
+			const qLead = parseId(sp.get('leadId') || sp.get('LEAD_ID'));
+			const qDeal = parseId(sp.get('dealId') || sp.get('DEAL_ID'));
+			if (qLead > 0) crmContextLeadId = qLead;
+			if (qDeal > 0) crmContextDealId = qDeal;
+			if (!crmContextLeadId && !crmContextDealId) {
+				const raw = sessionStorage.getItem('wa_cc_crm_ctx');
+				if (raw) {
+					const saved = JSON.parse(raw);
+					if (saved && (Date.now() - (saved.ts || 0)) < 86400000) {
+						if (parseInt(saved.leadId, 10) > 0) crmContextLeadId = parseInt(saved.leadId, 10);
+						if (parseInt(saved.dealId, 10) > 0) crmContextDealId = parseInt(saved.dealId, 10);
+					}
+				}
+			}
+			if (crmContextLeadId || crmContextDealId) {
+				sessionStorage.setItem('wa_cc_crm_ctx', JSON.stringify({
+					leadId: crmContextLeadId,
+					dealId: crmContextDealId,
+					ts: Date.now()
+				}));
+			}
+		} catch (e) { /* ignore */ }
+	})();
+
+	function persistCrmContextForChat(chatId) {
+		if (!chatId || (!crmContextLeadId && !crmContextDealId)) return;
+		try {
+			sessionStorage.setItem('wa_cc_ctx_chat_' + chatId, JSON.stringify({
+				leadId: crmContextLeadId,
+				dealId: crmContextDealId,
+				ts: Date.now()
+			}));
+		} catch (e) { /* ignore */ }
+	}
+
+	function restoreCrmContextForChat(chatId) {
+		if (!chatId || crmContextLeadId || crmContextDealId) return;
+		try {
+			const raw = sessionStorage.getItem('wa_cc_ctx_chat_' + chatId);
+			if (!raw) return;
+			const saved = JSON.parse(raw);
+			if (!saved || (Date.now() - (saved.ts || 0)) > 86400000) return;
+			if (parseInt(saved.leadId, 10) > 0) crmContextLeadId = parseInt(saved.leadId, 10);
+			if (parseInt(saved.dealId, 10) > 0) crmContextDealId = parseInt(saved.dealId, 10);
+		} catch (e) { /* ignore */ }
+	}
+
+	function getEffectiveCrmId(type) {
+		if (type === 'lead') return crmContextLeadId || crmBindings.leadId || 0;
+		if (type === 'deal') return crmContextDealId || crmBindings.dealId || 0;
+		return 0;
+	}
+
+	function waCcEachHostWindow(fn) {
+		const seen = new Set();
+		const list = [];
+		try { list.push(window); } catch (e) { /* ignore */ }
+		try { if (window.parent) list.push(window.parent); } catch (e) { /* ignore */ }
+		try { if (window.top) list.push(window.top); } catch (e) { /* ignore */ }
+		try { if (window.opener) list.push(window.opener); } catch (e) { /* ignore */ }
+		for (let i = 0; i < list.length; i++) {
+			try {
+				const w = list[i];
+				if (!w || seen.has(w)) continue;
+				seen.add(w);
+				const hit = fn(w);
+				if (hit) return hit;
+			} catch (e) { /* cross-origin */ }
+		}
+		return null;
+	}
 	let lastMessageId = 0;
 	let firstMessageId = 0;
 	let hasMoreHistory = true;
@@ -1270,6 +1533,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const failedCrmEntityChatLookups = new Set();
 	const olIdResolveCache = new Map();
 	const crmNameCache = new Map();
+	const messagesById = {};
+	let replyTo = null;
 
 	const listEl = document.getElementById('wa-chat-list');
 	const tabsEl = document.getElementById('wa-tabs');
@@ -1297,6 +1562,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const recTimerEl = document.getElementById('wa-rec-timer');
 	const recCancel = document.getElementById('wa-rec-cancel');
 	const recSend = document.getElementById('wa-rec-send');
+
+	const replyBar = document.getElementById('wa-reply-bar');
+	const replyAuthorEl = document.getElementById('wa-reply-author');
+	const replyTextEl = document.getElementById('wa-reply-text');
+	const replyCancel = document.getElementById('wa-reply-cancel');
 
 	const lightbox = document.getElementById('wa-lightbox');
 	const lightboxImg = document.getElementById('wa-lightbox-img');
@@ -1332,8 +1602,56 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (e.key === 'Escape' && lightbox.classList.contains('open')) closeLightbox();
 	});
 
+	function waRestOauth(method, params) {
+		params = params || {};
+		const body = new URLSearchParams();
+		body.set('auth', String(window.__WA_AID || ''));
+		function flatten(obj, prefix) {
+			Object.keys(obj || {}).forEach(function (k) {
+				const v = obj[k];
+				const key = prefix ? (prefix + '[' + k + ']') : k;
+				if (v === null || v === undefined) return;
+				if (Array.isArray(v)) {
+					v.forEach(function (item, idx) {
+						if (item !== null && typeof item === 'object') flatten(item, key + '[' + idx + ']');
+						else body.append(key + '[' + idx + ']', String(item));
+					});
+				} else if (typeof v === 'object') {
+					flatten(v, key);
+				} else {
+					body.set(key, String(v));
+				}
+			});
+		}
+		flatten(params);
+		return fetch('/rest/' + method + '.json', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: body.toString(),
+			credentials: 'omit'
+		}).then(function (r) { return r.json(); }).then(function (data) {
+			if (!data || data.error) {
+				const err = (data && (data.error_description || data.error)) || 'rest_error';
+				throw new Error(String(err));
+			}
+			return data.result;
+		});
+	}
+
 	function rest(method, params) {
+		// OAuth AUTH_ID только в mobile noprolog (нет PHP-сессии).
+		// На desktop после wa_tok → Authorize используем BX.rest + sessid (полные права юзера).
+		if (window.__WA_AID && window.__WA_NOPROLOG) {
+			return waRestOauth(method, params || {});
+		}
 		return new Promise((resolve, reject) => {
+			if (!window.BX || !BX.rest || typeof BX.rest.callMethod !== 'function') {
+				if (window.__WA_AID) {
+					return waRestOauth(method, params || {}).then(resolve, reject);
+				}
+				reject(new Error('BX.rest unavailable'));
+				return;
+			}
 			BX.rest.callMethod(method, params || {}, function (result) {
 				if (result.error()) reject(result.error());
 				else resolve(result.data());
@@ -2048,6 +2366,105 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function msgParams(msg) {
 		return (msg && (msg.params || msg.PARAMS)) || {};
+	}
+
+	function rememberMessages(messages) {
+		(messages || []).forEach(function (msg) {
+			const id = parseInt(msg && msg.id, 10);
+			if (id > 0) messagesById[id] = msg;
+		});
+	}
+
+	function getReplyId(msg) {
+		const p = msgParams(msg);
+		return parseInt(p.REPLY_ID || p.replyId || p.reply_id || 0, 10) || 0;
+	}
+
+	function getReplyPreviewText(msg) {
+		if (!msg) return '';
+		let t = stripConnectorPrefix(messageRawText(msg));
+		t = t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+		if (!t) t = getFileIds(msg).length ? '[файл]' : '[медиа]';
+		if (t.length > 140) t = t.slice(0, 137) + '...';
+		return t;
+	}
+
+	function getReplyAuthorName(msg, out) {
+		if (!msg) return '';
+		if (out) return getOutgoingSenderName(msg) || CURRENT_USER_NAME || 'Вы';
+		return getIncomingSenderName(msg) || 'Клиент';
+	}
+
+	function renderReplyQuoteHtml(replyId) {
+		if (!replyId) return '';
+		const orig = messagesById[replyId];
+		if (!orig) {
+			return '<div class="wa-msg-quote"><span class="wa-msg-quote-author">Ответ</span># ' + replyId + '</div>';
+		}
+		const out = isOutgoingMessage(orig);
+		const author = BX.util.htmlspecialchars(getReplyAuthorName(orig, out));
+		const text = BX.util.htmlspecialchars(getReplyPreviewText(orig));
+		return '<div class="wa-msg-quote"><span class="wa-msg-quote-author">' + author + '</span>' + text + '</div>';
+	}
+
+	function updateReplyBar() {
+		if (!replyBar) return;
+		if (!replyTo || !replyTo.id) {
+			replyBar.classList.remove('visible');
+			if (replyAuthorEl) replyAuthorEl.textContent = '';
+			if (replyTextEl) replyTextEl.textContent = '';
+			return;
+		}
+		replyBar.classList.add('visible');
+		if (replyAuthorEl) replyAuthorEl.textContent = replyTo.author || 'Сообщение';
+		if (replyTextEl) replyTextEl.textContent = replyTo.text || '';
+	}
+
+	function setReplyTo(msg) {
+		if (!msg || isSystemMessage(msg)) return;
+		const id = parseInt(msg.id, 10);
+		if (!id) return;
+		const out = isOutgoingMessage(msg);
+		replyTo = {
+			id: id,
+			author: getReplyAuthorName(msg, out),
+			text: getReplyPreviewText(msg)
+		};
+		updateReplyBar();
+		inputEl.focus();
+	}
+
+	function clearReplyTo() {
+		replyTo = null;
+		updateReplyBar();
+	}
+
+	function bindMessageReplyGestures(div, msg) {
+		if (!div || !msg || isSystemMessage(msg)) return;
+		let pressTimer = null;
+		div.addEventListener('contextmenu', function (e) {
+			e.preventDefault();
+			setReplyTo(msg);
+		});
+		div.addEventListener('touchstart', function () {
+			pressTimer = setTimeout(function () {
+				pressTimer = null;
+				setReplyTo(msg);
+			}, 480);
+		}, { passive: true });
+		div.addEventListener('touchend', function () {
+			if (pressTimer) {
+				clearTimeout(pressTimer);
+				pressTimer = null;
+			}
+		});
+		div.addEventListener('touchmove', function () {
+			if (pressTimer) {
+				clearTimeout(pressTimer);
+				pressTimer = null;
+			}
+		});
+		div.title = 'Правый клик / долгое нажатие — ответить';
 	}
 
 	function hydrateFilesFromMessages(messages) {
@@ -3081,6 +3498,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		div.dataset.id = msg.id;
 
 		let body = '';
+		const replyId = getReplyId(msg);
+		if (replyId) body += renderReplyQuoteHtml(replyId);
 		let fromName = '';
 		if (!system) {
 			fromName = out ? getOutgoingSenderName(msg) : getIncomingSenderName(msg);
@@ -3096,7 +3515,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (!body) body = '<span class="wa-msg-text" style="color:#667781;font-style:italic">[медиа]</span>';
 		const msgDate = parseMessageDate(msg);
 		if (msgDate) {
-			body += '<span class="wa-msg-time">' + formatTime(msgDate) + '</span>';
+		 body += '<span class="wa-msg-time">' + formatTime(msgDate) + '</span>';
 		}
 		div.innerHTML = body;
 
@@ -3117,6 +3536,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				else alert('Не удалось скачать файл');
 			});
 		});
+		bindMessageReplyGestures(div, msg);
 		return div;
 	}
 
@@ -3149,6 +3569,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function prependMessages(messages) {
 		if (!messages || !messages.length) return;
+		rememberMessages(messages);
 
 		const prevScrollHeight = messagesEl.scrollHeight;
 		const prevScrollTop = messagesEl.scrollTop;
@@ -3196,6 +3617,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function appendMessages(messages, replace) {
 		if (replace) messagesEl.innerHTML = '';
+		rememberMessages(messages);
 		if (!messages || !messages.length) {
 			if (replace) {
 				firstMessageId = 0;
@@ -3412,9 +3834,12 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (!dialogId) return;
 
 		if (recording) await cancelRecording();
+		clearReplyTo();
 
 		currentDialogId = dialogId;
 		currentChatId = chatData.chat_id || (chatData.chat && chatData.chat.id) || null;
+		restoreCrmContextForChat(currentChatId);
+		persistCrmContextForChat(currentChatId);
 		// UI загружает ONLY_OPENLINES — все чаты здесь открытые линии
 		currentChatIsOpenLine = true;
 		currentChatData = chatData;
@@ -3463,19 +3888,24 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				document.body.classList.remove('wa-cc-desktop');
 				return;
 			}
+			if (sp.get('wa_mobile') === '1' || (boot && boot.mobile)) {
+				document.body.classList.add('wa-cc-mobile');
+				document.body.classList.remove('wa-cc-desktop');
+				return;
+			}
 			if (sp.get('wa_desktop') === '1') {
 				document.body.classList.add('wa-cc-desktop');
 				document.body.classList.remove('wa-cc-mobile');
 				return;
 			}
-			if (sp.get('wa_mobile') === '1') {
-				document.body.classList.add('wa-cc-mobile');
-				document.body.classList.remove('wa-cc-desktop');
-				return;
-			}
-			// embed без флагов: не схлопывать по ширине слайдера Bitrix
+			// embed без флагов: desktop split (только если не mobile boot)
 			if (sp.get('wa_embed') === '1') {
-				document.body.classList.add('wa-cc-desktop');
+				if (boot && boot.mobile) {
+					document.body.classList.add('wa-cc-mobile');
+					document.body.classList.remove('wa-cc-desktop');
+				} else {
+					document.body.classList.add('wa-cc-desktop');
+				}
 				return;
 			}
 			if (window.matchMedia && window.matchMedia('(max-width: 720px)').matches) {
@@ -3509,28 +3939,143 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function openCrmEntity(type, id) {
+		id = parseInt(id, 10) || 0;
 		if (!id) return;
-		const path = type === 'lead'
+
+		const isLead = type === 'lead';
+		const desktopPath = isLead
 			? '/crm/lead/details/' + id + '/'
 			: '/crm/deal/details/' + id + '/';
-		if (typeof BX !== 'undefined' && BX.SidePanel && BX.SidePanel.Instance) {
-			BX.SidePanel.Instance.open(path, { cacheable: false, width: 920 });
-		} else {
-			window.open(path, '_blank');
+		const mobilePath = isLead
+			? '/mobile/crm/lead/?page=view&lead_id=' + id
+			: '/mobile/crm/deal/?page=view&deal_id=' + id;
+		const title = isLead ? ('Лид #' + id) : ('Сделка #' + id);
+
+		const onMobile = !!(window.__WA_NOPROLOG
+			|| (window.__WA_CC_BOOT && window.__WA_CC_BOOT.mobile)
+			|| (document.body && document.body.classList.contains('wa-cc-mobile'))
+			|| /BitrixMobile|BXMobileApp|Bitrix24\.Mobile|iPhone|Android/i.test(navigator.userAgent || ''));
+
+		function sidePanelOpen(path) {
+			const candidates = [];
+			try { if (window.top && window.top.BX && window.top.BX.SidePanel) candidates.push(window.top.BX.SidePanel.Instance); } catch (e) {}
+			try { if (window.parent && window.parent !== window && window.parent.BX && window.parent.BX.SidePanel) candidates.push(window.parent.BX.SidePanel.Instance); } catch (e) {}
+			try { if (window.BX && BX.SidePanel) candidates.push(BX.SidePanel.Instance); } catch (e) {}
+			for (let i = 0; i < candidates.length; i++) {
+				if (candidates[i] && typeof candidates[i].open === 'function') {
+					candidates[i].open(path, { cacheable: false, width: 920 });
+					return true;
+				}
+			}
+			return false;
 		}
+
+		function openViaMobileBridge(absUrl) {
+			const app = waCcEachHostWindow(function (w) {
+				if (!w.Application) return null;
+				try {
+					if (typeof w.Application.openCrmEntity === 'function') {
+						w.Application.openCrmEntity({ id: id, type: isLead ? 'lead' : 'deal' });
+						return w.Application;
+					}
+					if (typeof w.Application.openUrl === 'function') {
+						w.Application.openUrl(absUrl);
+						return w.Application;
+					}
+				} catch (e1) {
+					try {
+						if (typeof w.Application.openCrmEntity === 'function') {
+							w.Application.openCrmEntity({ entityTypeId: isLead ? 1 : 2, entityId: id });
+							return w.Application;
+						}
+					} catch (e2) { /* ignore */ }
+				}
+				return null;
+			});
+			if (app) return true;
+
+			const pmHosts = [];
+			try { if (window.parent && window.parent !== window) pmHosts.push(window.parent); } catch (e) {}
+			try { if (window.top && window.top !== window) pmHosts.push(window.top); } catch (e) {}
+			pmHosts.push(window);
+
+			for (let i = 0; i < pmHosts.length; i++) {
+				try {
+					const pm = pmHosts[i].BXMobileApp && pmHosts[i].BXMobileApp.PageManager;
+					if (!pm) continue;
+					const opts = { url: absUrl, title: title, cache: false, bx24ModernStyle: true };
+					if (typeof pm.loadPageStart === 'function') {
+						pm.loadPageStart(opts);
+						return true;
+					}
+					if (typeof pm.loadPageBlank === 'function') {
+						pm.loadPageBlank(opts);
+						return true;
+					}
+				} catch (e) { /* ignore */ }
+			}
+
+			const mobileTools = waCcEachHostWindow(function (w) {
+				if (w.BX && w.BX.MobileTools && typeof w.BX.MobileTools.openEntity === 'function') {
+					w.BX.MobileTools.openEntity({ typeName: isLead ? 'lead' : 'deal', id: id });
+					return w.BX.MobileTools;
+				}
+				return null;
+			});
+			return !!mobileTools;
+		}
+
+		// Desktop: SidePanel у родителя портала (не внутри iframe локального приложения)
+		if (!onMobile) {
+			try {
+				if (window.BX24 && typeof BX24.openPath === 'function') {
+					BX24.openPath(desktopPath);
+					return;
+				}
+			} catch (e) { /* ignore */ }
+			if (sidePanelOpen(desktopPath)) return;
+			try {
+				if (window.top && window.top !== window) {
+					window.top.location.href = desktopPath;
+					return;
+				}
+			} catch (e) { /* ignore */ }
+			const aDesk = document.createElement('a');
+			aDesk.href = desktopPath;
+			aDesk.target = '_top';
+			document.body.appendChild(aDesk);
+			aDesk.click();
+			aDesk.remove();
+			return;
+		}
+
+		// Mobile: native bridge → иначе навигация (раньше молчаливо не открывалось)
+		const absUrl = (location.origin || '') + mobilePath;
+		if (openViaMobileBridge(absUrl)) {
+			return;
+		}
+		try {
+			if (window.top && window.top !== window) {
+				window.top.location.assign(absUrl);
+				return;
+			}
+		} catch (e) { /* ignore */ }
+		window.location.assign(absUrl);
 	}
 
 	function updateCrmButtons() {
 		const hasChat = currentChatIsOpenLine && currentChatId;
-		btnLead.style.display = hasChat && crmBindings.leadId ? 'inline-block' : 'none';
-		btnDeal.style.display = hasChat && crmBindings.dealId ? 'inline-block' : 'none';
-		if (crmBindings.leadId) {
-			btnLead.textContent = 'Лид #' + crmBindings.leadId;
+		const effLead = getEffectiveCrmId('lead');
+		const effDeal = getEffectiveCrmId('deal');
+		btnLead.style.display = hasChat && effLead ? 'inline-block' : 'none';
+		btnDeal.style.display = hasChat && effDeal ? 'inline-block' : 'none';
+		if (effLead) {
+			btnLead.textContent = 'Лид #' + effLead;
 		} else {
 			btnLead.textContent = 'Лид';
 		}
-		if (crmBindings.dealId) {
-			btnDeal.textContent = 'Сделка #' + crmBindings.dealId;
+		if (effDeal) {
+			btnDeal.textContent = 'Сделка #' + effDeal;
 		} else {
 			btnDeal.textContent = 'Сделка';
 		}
@@ -3538,6 +4083,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function applyCrmBindings(chat, dialog) {
 		crmBindings = parseCrmBindings(getEntityData2(chat, dialog));
+		if (crmContextDealId > 0) crmBindings.dealId = crmContextDealId;
+		if (crmContextLeadId > 0) crmBindings.leadId = crmContextLeadId;
 		updateCrmButtons();
 	}
 
@@ -3719,8 +4266,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	btnAnswer.addEventListener('click', acceptChat);
 	btnFinish.addEventListener('click', finishChat);
-	btnLead.addEventListener('click', () => openCrmEntity('lead', crmBindings.leadId));
-	btnDeal.addEventListener('click', () => openCrmEntity('deal', crmBindings.dealId));
+	btnLead.addEventListener('click', () => openCrmEntity('lead', getEffectiveCrmId('lead')));
+	btnDeal.addEventListener('click', () => openCrmEntity('deal', getEffectiveCrmId('deal')));
+	if (replyCancel) replyCancel.addEventListener('click', clearReplyTo);
 
 	async function refreshTail() {
 		if (!currentDialogId) return;
@@ -3760,8 +4308,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		sendBtn.disabled = true;
 		try {
 			await ensureCanSend();
-			await rest('im.message.add', { DIALOG_ID: currentDialogId, MESSAGE: text });
+			const payload = { DIALOG_ID: currentDialogId, MESSAGE: text };
+			if (replyTo && replyTo.id) payload.REPLY_ID = replyTo.id;
+			await rest('im.message.add', payload);
 			inputEl.value = '';
+			clearReplyTo();
 			inputEl.style.height = 'auto';
 			updateSendButton();
 			await refreshTail();
@@ -4265,8 +4816,22 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	updateSendButton();
-	loadChatList();
-	setInterval(loadChatList, 30000);
+
+	(async function ensureCurrentUserName() {
+		try {
+			if (CURRENT_USER_NAME && !/^User #\d+$/i.test(String(CURRENT_USER_NAME).trim())) {
+				return;
+			}
+			const u = await rest('user.current', {});
+			if (!u || typeof u !== 'object') return;
+			const name = [u.NAME, u.LAST_NAME].filter(Boolean).join(' ').trim()
+				|| String(u.LOGIN || u.EMAIL || '').trim();
+			if (name) CURRENT_USER_NAME = name;
+		} catch (e) { /* ignore */ }
+	})().finally(function () {
+		loadChatList();
+		setInterval(loadChatList, 30000);
+	});
 
 	async function fetchCrmPhonesForEntity(entityType, entityId) {
 		const type = String(entityType || '').toLowerCase();
@@ -4503,7 +5068,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		});
 	}
 
-	function scoreDialogForCrm(dialog, phoneDigits, fromPrimary) {
+	function scoreDialogForCrm(dialog, phoneDigits, fromPrimary, ctxEntity) {
 		if (!dialog) return -1e9;
 		const hay = [
 			dialog.entity_id,
@@ -4516,6 +5081,22 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 		let score = 0;
 		if (fromPrimary) score += 40;
+
+		if (ctxEntity && ctxEntity.id > 0) {
+			const bindings = parseCrmBindings([
+				dialog.entity_data_2,
+				dialog.entity_data_1,
+				dialog.entity_data_3
+			].filter(Boolean).join('|'));
+			if (ctxEntity.type === 'lead') {
+				if (bindings.leadId === ctxEntity.id) score += 500;
+				else if (bindings.leadId > 0) score -= 1000;
+			}
+			if (ctxEntity.type === 'deal') {
+				if (bindings.dealId === ctxEntity.id) score += 500;
+				else if (bindings.dealId > 0) score -= 1000;
+			}
+		}
 
 		const hayDigits = normalizePhoneDigits(hay);
 		if (phoneDigits && phoneDigits.length >= 10) {
@@ -4614,10 +5195,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			console.info('WA CC: CRM deeplink phones', phones);
 		}
 
+		const ctxEntity = { type: type, id: id };
 		const seen = new Set();
 		const scored = [];
 
-		const pushChatId = async function (cid, fromPrimary) {
+		const pushChatId = async function (cid, fromPrimary, entityBound) {
 			cid = parseInt(cid, 10);
 			if (!cid) return;
 			try {
@@ -4633,46 +5215,96 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				if (requirePhone && !chatItemMatchesPhones(item, phones)) return;
 
 				const dialog = item.chat || item;
-				let bestPhoneScore = scoreDialogForCrm(dialog, phoneDigits, fromPrimary);
+				let bestPhoneScore = scoreDialogForCrm(dialog, phoneDigits, fromPrimary, ctxEntity);
+				if (entityBound) bestPhoneScore += 800;
 				for (let pi = 1; pi < phones.length; pi++) {
-					const s = scoreDialogForCrm(dialog, phones[pi], fromPrimary);
+					let s = scoreDialogForCrm(dialog, phones[pi], fromPrimary, ctxEntity);
+					if (entityBound) s += 800;
 					if (s > bestPhoneScore) bestPhoneScore = s;
 				}
-				scored.push({ score: bestPhoneScore, item: item, fromPrimary: fromPrimary });
+				scored.push({
+					score: bestPhoneScore,
+					item: item,
+					fromPrimary: fromPrimary,
+					entityBound: !!entityBound
+				});
 			} catch (e) {
 				console.warn('crm deeplink dialog', cid, e);
 			}
 		};
 
-		const pickBest = function () {
-			if (!scored.length) return null;
-			scored.sort(function (a, b) { return b.score - a.score; });
-			if (requirePhone) {
-				const matched = scored.filter(function (s) {
-					return chatItemMatchesPhones(s.item, phones);
-				});
-				if (!matched.length) return null;
-				return matched[0].item;
-			}
-			return scored[0].item;
-		};
-
-		// 1) телефон → USER_CODE / duplicate (самый точный)
-		if (phones.length) {
-			const phoneSet = new Set();
-			await findChatsByPhonesAnyLine(phones, phoneSet);
-			const pids = Array.from(phoneSet);
-			for (let i = 0; i < pids.length; i++) {
-				await pushChatId(pids[i], false);
-			}
-			const hit = pickBest();
-			if (hit) {
+		const finalizeBest = async function () {
+			const best = pickBest();
+			if (best) {
 				try {
 					chatsCache = mergeChatLists(chatsCache, scored.map(function (s) { return s.item; }));
 					await enrichChatDisplayNames(scored.map(function (s) { return s.item; }));
 					renderChatList();
 				} catch (e) {}
-				return hit;
+			}
+			return best;
+		};
+
+		const pickBest = function () {
+			if (!scored.length) return null;
+			scored.sort(function (a, b) { return b.score - a.score; });
+			let pool = scored;
+			if (requirePhone) {
+				pool = scored.filter(function (s) {
+					return chatItemMatchesPhones(s.item, phones);
+				});
+				if (!pool.length) return null;
+			}
+			const entityHits = pool.filter(function (s) { return s.entityBound || s.score >= 500; });
+			if (entityHits.length) return entityHits[0].item;
+			return pool[0].item;
+		};
+
+		// 1) Чаты, привязанные к этому лиду/сделке (не путать с другими лидами того же клиента)
+		const primaryIds = new Set();
+		await collectChatIdsForCrmEntity(type, id, primaryIds);
+		await fetchChatIdsFromCrmActivities(type, id, primaryIds);
+		try {
+			const active = await rest('imopenlines.crm.chat.get', {
+				CRM_ENTITY_TYPE: type,
+				CRM_ENTITY: id,
+				ACTIVE_ONLY: 'Y'
+			});
+			const list = Array.isArray(active) ? active : (active && active.result) || [];
+			if (Array.isArray(list)) {
+				list.forEach(function (c) {
+					const cid = parseInt(c.CHAT_ID || c.chatId || c.id, 10);
+					if (cid) primaryIds.add(cid);
+				});
+			}
+		} catch (e) {
+			console.warn('imopenlines.crm.chat.get primary', e);
+		}
+		const pids = Array.from(primaryIds);
+		for (let i = 0; i < pids.length; i++) {
+			await pushChatId(pids[i], true, true);
+		}
+		const primaryHit = pickBest();
+		if (primaryHit) {
+			try {
+				chatsCache = mergeChatLists(chatsCache, scored.map(function (s) { return s.item; }));
+				await enrichChatDisplayNames(scored.map(function (s) { return s.item; }));
+				renderChatList();
+			} catch (e) {}
+			return primaryHit;
+		}
+
+		// 2) телефон → fallback (один клиент — несколько лидов/чатов)
+		if (phones.length) {
+			const phoneSet = new Set();
+			await findChatsByPhonesAnyLine(phones, phoneSet);
+			const phoneChatIds = Array.from(phoneSet);
+			for (let i = 0; i < phoneChatIds.length; i++) {
+				await pushChatId(phoneChatIds[i], false, false);
+			}
+			const phoneHit = pickBest();
+			if (phoneHit) {
+				return await finalizeBest();
 			}
 		}
 
@@ -4718,7 +5350,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 			const ids = Array.from(chatIds);
 			for (let i = 0; i < ids.length; i++) {
-				await pushChatId(ids[i], batch.fromPrimary);
+				await pushChatId(ids[i], batch.fromPrimary, batch.fromPrimary && batch.entityType === type && batch.entityId === id);
 			}
 
 			if (batch.activeOnly && batch.fromPrimary) {
@@ -4741,19 +5373,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			}
 			const aids = Array.from(actIds);
 			for (let i = 0; i < aids.length; i++) {
-				await pushChatId(aids[i], true);
+				await pushChatId(aids[i], true, true);
 			}
 		}
 
-		const best = pickBest();
-		if (best) {
-			try {
-				chatsCache = mergeChatLists(chatsCache, scored.map(function (s) { return s.item; }));
-				await enrichChatDisplayNames(scored.map(function (s) { return s.item; }));
-				renderChatList();
-			} catch (e) {}
-		}
-		return best;
+		return await finalizeBest();
 	}
 
 	/* Deep-link: ?chatId= / ?dialogId= / ?dealId= / ?leadId= (приоритет chat → dialog → deal/lead) */
@@ -4768,6 +5392,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const dealIdParam = dealIdRaw ? String(parseCrmEntityId(dealIdRaw) || '') : '';
 		const leadIdParam = leadIdRaw ? String(parseCrmEntityId(leadIdRaw) || '') : '';
 		if (!chatIdParam && !dialogIdParam && !dealIdRaw && !leadIdRaw) return;
+		if (leadIdParam) crmContextLeadId = parseInt(leadIdParam, 10) || crmContextLeadId;
+		if (dealIdParam) crmContextDealId = parseInt(dealIdParam, 10) || crmContextDealId;
 		if ((dealIdRaw || leadIdRaw) && !dealIdParam && !leadIdParam) {
 			console.warn('WA CC: некорректный dealId/leadId', dealIdRaw || leadIdRaw);
 			return;
@@ -4796,6 +5422,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			if (fromCrm) {
 				crmFocusDialogId = resolveDialogId(target);
 				if (isWhatsAppGroupChat(target)) listFilter = 'groups';
+				if (leadIdParam) crmContextLeadId = parseInt(leadIdParam, 10) || crmContextLeadId;
+				if (dealIdParam) crmContextDealId = parseInt(dealIdParam, 10) || crmContextDealId;
 			}
 			renderChatList();
 			await openDialog(target);
@@ -4875,12 +5503,14 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 <?php
 if (!empty($waEmbed)) {
-	// добить отложенные JS из Asset (rest/core), без footer шаблона B24
 	if (is_object($APPLICATION) && method_exists($APPLICATION, 'ShowBodyScripts')) {
 		$APPLICATION->ShowBodyScripts();
 	}
 	echo '</body></html>';
-	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php';
+	// epilog без prolog = fatal → белый экран в BitrixMobile
+	if (empty($waNoProlog) && defined('B_PROLOG_INCLUDED')) {
+		require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php';
+	}
 	die();
 }
 

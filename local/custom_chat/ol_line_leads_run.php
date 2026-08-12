@@ -48,6 +48,18 @@ if ($leadId > 0 && $timeline) {
 	die();
 }
 
+if ($dealId > 0 && $timeline) {
+	\Bitrix\Main\Loader::includeModule('crm');
+	\Bitrix\Main\Loader::includeModule('im');
+	\Bitrix\Main\Loader::includeModule('imopenlines');
+	echo "Attach OL chat → deal #{$dealId} timeline\n";
+	$report = olLineLeadsAttachChatToDealTimeline($dealId, $forceChatId);
+	echo json_encode($report, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n";
+	echo "Check AddMessage2Log tag: ol_line_leads\n";
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php';
+	die();
+}
+
 if ($dealId > 0) {
 	\Bitrix\Main\Loader::includeModule('crm');
 	\Bitrix\Main\Loader::includeModule('im');

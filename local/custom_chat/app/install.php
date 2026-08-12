@@ -103,6 +103,23 @@ function waCcAppRestCall($scheme, $domain, $authId, $method, array $params)
 if ($authId === '') {
 	$error = 'Нет AUTH_ID. Открой установку из карточки локального приложения Bitrix (не прямой URL в браузере).';
 } else {
+	$info = waCcAppRestCall($scheme, $domain, $authId, 'app.info', []);
+	if ($info['ok'] && is_array($info['result'])) {
+		$cid = (string)($info['result']['CODE'] ?? $info['result']['ID'] ?? '');
+		// app.info часто отдаёт CODE вида local.xxx — это CLIENT_ID
+		if ($cid === '' && !empty($info['result']['CLIENT_ID'])) {
+			$cid = (string)$info['result']['CLIENT_ID'];
+		}
+		if ($cid !== '') {
+			waCcAppSaveClientId($cid);
+			$logs[] = 'client_id saved: ' . $cid;
+		} else {
+			$logs[] = 'app.info: no CODE/CLIENT_ID';
+		}
+	} else {
+		$logs[] = 'app.info: ' . ($info['error'] ?: 'fail');
+	}
+
 	foreach ($placements as $row) {
 		$placement = (string)$row['placement'];
 		$tabTitle = (string)$row['title'];

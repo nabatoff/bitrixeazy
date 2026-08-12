@@ -16,7 +16,12 @@ function waCcAppPublicBaseUrl()
 	$host = '';
 	if (!empty($_SERVER['HTTP_HOST'])) {
 		$host = (string)$_SERVER['HTTP_HOST'];
+	} elseif (!empty($_SERVER['SERVER_NAME'])) {
+		$host = (string)$_SERVER['SERVER_NAME'];
 	}
+	// BitrixMobile WebView часто белеет на https://host:443/...
+	$host = preg_replace('/:(443|80)$/', '', $host);
+
 	$https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
 		|| (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443)
 		|| (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
@@ -39,6 +44,67 @@ function waCcAppChatEmbedUrl(array $query = [])
 function waCcAppTitle()
 {
 	return 'WhatsApp чат';
+}
+
+/**
+ * CLIENT_ID локального приложения (для REST_APP activity).
+ * Пишется при install.php; иначе ищем по URL handler.
+ */
+function waCcAppClientIdPath()
+{
+	return __DIR__ . '/client_id.local.php';
+}
+
+function waCcAppSaveClientId($clientId)
+{
+	$clientId = trim((string)$clientId);
+	if ($clientId === '') {
+		return false;
+	}
+	$file = waCcAppClientIdPath();
+	$code = "<?php\nreturn " . var_export($clientId, true) . ";\n";
+	return (bool)@file_put_contents($file, $code);
+}
+
+function waCcAppGetClientId()
+{
+	$file = waCcAppClientIdPath();
+	if (is_file($file)) {
+		$v = include $file;
+		if (is_string($v) && $v !== '') {
+			return $v;
+		}
+	}
+
+	try {
+		if (class_exists('\Bitrix\Main\Loader') && \Bitrix\Main\Loader::includeModule('rest')
+			&& class_exists('\Bitrix\Rest\AppTable')
+		) {
+			$needle = 'custom_chat/app';
+			$res = \Bitrix\Rest\AppTable::getList([
+				'filter' => ['=ACTIVE' => 'Y'],
+				'select' => ['ID', 'CLIENT_ID', 'URL', 'URL_INSTALL', 'CODE'],
+			]);
+			while ($row = $res->fetch()) {
+				$blob = strtolower(implode(' ', [
+					(string)($row['URL'] ?? ''),
+					(string)($row['URL_INSTALL'] ?? ''),
+					(string)($row['CODE'] ?? ''),
+				]));
+				if (strpos($blob, $needle) !== false || strpos($blob, 'custom_chat') !== false) {
+					$cid = (string)($row['CLIENT_ID'] ?? '');
+					if ($cid !== '') {
+						waCcAppSaveClientId($cid);
+						return $cid;
+					}
+				}
+			}
+		}
+	} catch (\Throwable $e) {
+		/* ignore */
+	}
+
+	return '';
 }
 
 /** @return array<int, array{placement:string,title:string}> */

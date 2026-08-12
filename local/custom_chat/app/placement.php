@@ -1,11 +1,17 @@
 <?php
 /**
- * Placement: сделка/лид → оболочка КЦ.
- * Auth ДО любого вывода.
+ * Placement handler — без prolog (BitrixMobile).
+ * Также ловит открытие REST_APP-activity из таймлайна.
  */
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/shell.php';
+require_once __DIR__ . '/placement_query.php';
+
+if (!headers_sent()) {
+	header('Content-Type: text/html; charset=UTF-8');
+	header('Cache-Control: no-store');
+}
 
 try {
 	$placement = isset($_REQUEST['PLACEMENT']) ? (string)$_REQUEST['PLACEMENT'] : '';
@@ -14,26 +20,17 @@ try {
 	if (!is_array($options)) {
 		$options = [];
 	}
-	$entityId = (int)($options['ID'] ?? $options['id'] ?? 0);
 
-	$query = [];
-	$placementUp = strtoupper($placement);
-	if ($entityId > 0) {
-		if (strpos($placementUp, 'LEAD') !== false) {
-			$query['leadId'] = $entityId;
-		} elseif (strpos($placementUp, 'DEAL') !== false) {
-			$query['dealId'] = $entityId;
-		}
-	}
+	$query = waCcAppBuildQueryFromPlacement($options, $placement);
 
-	$auth = waCcAppAuthorizeFromRequest();
+	$auth = waCcAppResolveUserIdForApp();
 	if (!$auth['ok']) {
-		waCcAppRenderError('Нет сессии: ' . ($auth['error'] ?: 'auth_failed')
+		waCcAppRenderError('Нет AUTH_ID/user: ' . ($auth['error'] ?: 'auth_failed')
 			. (!empty($auth['debug']) ? (' [' . $auth['debug'] . ']') : ''));
 	}
 
 	$mobile = waCcAppIsMobileClient();
-	$note = ($placement !== '' ? $placement : 'DEFAULT') . ' / ' . ($mobile ? 'mobile' : 'desktop');
+	$note = ($placement !== '' ? $placement : 'DEFAULT') . ' / ' . ($mobile ? 'mobile-redirect' : 'desktop-iframe');
 	waCcAppRenderShell($query, (int)$auth['userId'], $note, $mobile);
 } catch (\Throwable $e) {
 	waCcAppRenderError('Fatal: ' . $e->getMessage());
