@@ -9,15 +9,17 @@ export const CONTACT_CENTER_URL = 'https://crm.artflowers.kz/local/custom_chat/'
 
 export const REQUIRED_CHAT_SCOPES = ['im', 'imopenlines', 'disk'];
 
-export function contactCenterChatUrl({ chatId, dialogId } = {}) {
+export function contactCenterChatUrl({ chatId, dialogId, dealId, leadId } = {}) {
   const url = new URL(CONTACT_CENTER_URL);
   if (chatId) url.searchParams.set('chatId', String(chatId));
   if (dialogId) url.searchParams.set('dialogId', String(dialogId));
+  if (dealId) url.searchParams.set('dealId', String(dealId));
+  if (leadId) url.searchParams.set('leadId', String(leadId));
   return url.toString();
 }
 
-export function contactCenterChatPath({ chatId, dialogId } = {}) {
-  const url = new URL(contactCenterChatUrl({ chatId, dialogId }));
+export function contactCenterChatPath({ chatId, dialogId, dealId, leadId } = {}) {
+  const url = new URL(contactCenterChatUrl({ chatId, dialogId, dealId, leadId }));
   return `${url.pathname}${url.search}`;
 }
 
@@ -55,9 +57,9 @@ function openCcPopup(absoluteUrl) {
  * Открыть КЦ: SidePanel Битрикса (предпочтительно), иначе popup-окно.
  * Никогда не iframe из виджета на Vercel — sameorigin блокирует.
  */
-export function openContactCenter({ chatId, dialogId } = {}) {
-  const path = contactCenterChatPath({ chatId, dialogId });
-  const absolute = contactCenterChatUrl({ chatId, dialogId });
+export function openContactCenter({ chatId, dialogId, dealId, leadId } = {}) {
+  const path = contactCenterChatPath({ chatId, dialogId, dealId, leadId });
+  const absolute = contactCenterChatUrl({ chatId, dialogId, dealId, leadId });
 
   try {
     const BX24 = window.BX24;

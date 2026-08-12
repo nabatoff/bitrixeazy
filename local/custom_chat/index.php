@@ -197,28 +197,319 @@ if (!empty($_GET['wa_media'])) {
 	exit;
 }
 
-require($_SERVER["DOCUMENT_ROOT"]."/bitrix/header.php");
-$APPLICATION->SetTitle("Контакт-центр (WhatsApp Web UI)");
+/**
+ * Сессия ОЛ ↔ CHAT_ID (ASSOCIATED_ENTITY_ID в CRM часто = SESSION_ID).
+ * REST imopenlines.dialog.get(SESSION_ID) на коробке может отдавать 400.
+ */
+if (isset($_GET['wa_resolve_ol'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
 
-// Разрешить встраивание КЦ в iframe виджета (модалка BitrixEasy)
-if (class_exists('\\Bitrix\\Main\\Context')) {
-	try {
-		$resp = \Bitrix\Main\Context::getCurrent()->getResponse();
-		$headers = $resp->getHeaders();
-		$headers->delete('X-Frame-Options');
-		$headers->set(
-			'Content-Security-Policy',
-			"frame-ancestors 'self' https://crm.artflowers.kz https://bitrixeazy.vercel.app https://*.vercel.app"
-		);
-	} catch (\Throwable $e) {
-		/* ignore */
+	global $USER;
+	header('Content-Type: application/json; charset=utf-8');
+	if (!$USER || !$USER->IsAuthorized()) {
+		http_response_code(401);
+		echo json_encode(['error' => 'auth']);
+		exit;
 	}
+
+	$rawId = (int)$_GET['wa_resolve_ol'];
+	$out = [
+		'rawId' => $rawId,
+		'chatId' => 0,
+		'sessionId' => 0,
+		'userCode' => '',
+		'title' => '',
+		'configId' => 0,
+		'closed' => false,
+	];
+	if ($rawId <= 0) {
+		echo json_encode($out);
+		exit;
+	}
+
+	try {
+		\Bitrix\Main\Loader::includeModule('im');
+		\Bitrix\Main\Loader::includeModule('imopenlines');
+	} catch (\Throwable $e) {
+		echo json_encode($out);
+		exit;
+	}
+
+	$session = null;
+	$chat = null;
+	try {
+		if (class_exists('\Bitrix\ImOpenLines\Model\SessionTable')) {
+			$session = \Bitrix\ImOpenLines\Model\SessionTable::getById($rawId)->fetch();
+			if (!$session) {
+				$session = \Bitrix\ImOpenLines\Model\SessionTable::getList([
+					'filter' => ['=CHAT_ID' => $rawId],
+					'order' => ['ID' => 'DESC'],
+					'limit' => 1,
+				])->fetch();
+			}
+		}
+	} catch (\Throwable $e) {
+		$session = null;
+	}
+
+	if (is_array($session)) {
+		$out['sessionId'] = (int)($session['ID'] ?? 0);
+		$out['chatId'] = (int)($session['CHAT_ID'] ?? 0);
+		$out['userCode'] = (string)($session['USER_CODE'] ?? '');
+		$out['configId'] = (int)($session['CONFIG_ID'] ?? 0);
+		$status = (int)($session['STATUS'] ?? 0);
+		$out['closed'] = !empty($session['CLOSED']) && $session['CLOSED'] !== 'N'
+			|| in_array($status, [50, 60, 70, 80], true);
+	}
+
+	$chatId = (int)$out['chatId'] ?: $rawId;
+	try {
+		if (class_exists('\Bitrix\Im\Model\ChatTable')) {
+			$chat = \Bitrix\Im\Model\ChatTable::getById($chatId)->fetch();
+			if (!$chat && $rawId !== $chatId) {
+				$chat = \Bitrix\Im\Model\ChatTable::getById($rawId)->fetch();
+			}
+		}
+	} catch (\Throwable $e) {
+		$chat = null;
+	}
+
+	if (is_array($chat)) {
+		$out['chatId'] = (int)($chat['ID'] ?? $chatId);
+		$out['title'] = (string)($chat['TITLE'] ?? '');
+		if ($out['userCode'] === '' && !empty($chat['ENTITY_ID'])) {
+			$out['userCode'] = (string)$chat['ENTITY_ID'];
+		}
+	} elseif ($out['chatId'] <= 0) {
+		$out['chatId'] = $rawId;
+	}
+
+	echo json_encode($out, JSON_UNESCAPED_UNICODE);
+	exit;
 }
 
-CJSCore::Init(['rest', 'pull']);
+$waEmbed = isset($_GET['wa_embed']) && (string)$_GET['wa_embed'] === '1';
+$waMobile = isset($_GET['wa_mobile']) && (string)$_GET['wa_mobile'] === '1';
+$waTok = isset($_GET['wa_tok']) ? (string)$_GET['wa_tok'] : '';
+// deeplink из карточки сделки/лида на телефоне — сразу экран чата
+$waDealLeadDeep = (!empty($_GET['dealId']) || !empty($_GET['leadId']));
 
-global $USER;
-$currentUserId = (int)$USER->GetID();
+if ($waEmbed) {
+	// Вложенный iframe / локальное app: без шаблона Bitrix24 (иначе SearchTitle / frame-bust)
+	if (!defined('B_PROLOG_INCLUDED')) {
+		if (!defined('NO_KEEP_STATISTIC')) {
+			define('NO_KEEP_STATISTIC', true);
+		}
+		if (!defined('NO_AGENT_CHECK')) {
+			define('NO_AGENT_CHECK', true);
+		}
+		if (!defined('NOT_CHECK_PERMISSIONS')) {
+			define('NOT_CHECK_PERMISSIONS', false);
+		}
+		require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+	}
+
+	global $USER, $APPLICATION;
+
+	// one-time token из app/shell (мобильный iframe без cookie)
+	if ($waTok !== '' && (!$USER || !$USER->IsAuthorized())) {
+		$tokFile = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/shell.php';
+		if (is_file($tokFile)) {
+			require_once $tokFile;
+			$tokUserId = waCcAppConsumeToken($waTok);
+			if ($tokUserId > 0 && is_object($USER) && method_exists($USER, 'Authorize')) {
+				try {
+					$USER->Authorize($tokUserId); // CUser::Authorize
+				} catch (\Throwable $e) {
+					/* ignore */
+				}
+			}
+		}
+	}
+
+	if (!$USER || !$USER->IsAuthorized()) {
+		http_response_code(200);
+		header('Content-Type: text/html; charset=utf-8');
+		echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+			. '<title>WhatsApp</title></head><body style="font:15px system-ui;padding:20px;background:#fff3cd">'
+			. '<b>Auth required</b><br>Нет сессии портала. Открой WhatsApp чат из меню приложения Bitrix24.'
+			. '</body></html>';
+		die();
+	}
+
+	if (class_exists('\\Bitrix\\Main\\Context')) {
+		try {
+			$resp = \Bitrix\Main\Context::getCurrent()->getResponse();
+			$headers = $resp->getHeaders();
+			$headers->delete('X-Frame-Options');
+			$headers->set(
+				'Content-Security-Policy',
+				"frame-ancestors 'self' https://crm.artflowers.kz https://bitrixeazy.vercel.app https://*.vercel.app"
+			);
+		} catch (\Throwable $e) {
+			/* ignore */
+		}
+	}
+
+	// На mobile/app НЕ вызываем ShowHead/Extension — frame-bust → белый экран в WebView
+	$waLiteHead = $waMobile || $waTok !== '' || defined('WA_CC_APP_BOOT');
+	if (!$waLiteHead) {
+		if (class_exists('\\Bitrix\\Main\\UI\\Extension')) {
+			try {
+				\Bitrix\Main\UI\Extension::load(['main.core', 'rest.client', 'pull.client', 'ui.notification']);
+			} catch (\Throwable $e) {
+				/* ignore */
+			}
+		}
+		CJSCore::Init(['ajax', 'rest', 'pull', 'popup']);
+	}
+
+	$currentUserId = (int)$USER->GetID();
+	$currentUserName = '';
+	if ($USER) {
+		if (method_exists($USER, 'GetFormattedName')) {
+			$currentUserName = trim((string)$USER->GetFormattedName());
+		}
+		if ($currentUserName === '') {
+			$currentUserName = trim((string)$USER->GetFullName());
+		}
+		if ($currentUserName === '') {
+			$currentUserName = trim((string)$USER->GetLogin());
+		}
+	}
+	$bodyClass = 'wa-cc-embed';
+	$waDesktop = isset($_GET['wa_desktop']) && (string)$_GET['wa_desktop'] === '1';
+	if ($waMobile) {
+		$bodyClass .= ' wa-cc-mobile';
+	} elseif ($waDesktop || (!$waMobile && defined('WA_CC_APP_BOOT'))) {
+		$bodyClass .= ' wa-cc-desktop';
+	} elseif (!$waMobile && $waTok === '') {
+		/* обычный embed без флага — desktop split */
+		$bodyClass .= ' wa-cc-desktop';
+	}
+	if ($waMobile && $waDealLeadDeep) {
+		$bodyClass .= ' wa-chat-open';
+	}
+	$sessId = function_exists('bitrix_sessid') ? bitrix_sessid() : '';
+	// App include (/local/custom_chat/app/) не меняет location.search — прокидываем флаги в JS
+	$waBootQuery = [
+		'wa_embed' => '1',
+		'wa_mobile' => $waMobile ? '1' : '',
+		'wa_desktop' => (!empty($_GET['wa_desktop']) && (string)$_GET['wa_desktop'] === '1') ? '1' : '',
+	];
+	foreach (['dealId', 'leadId', 'chatId', 'dialogId', 'DEAL_ID', 'LEAD_ID'] as $waBootKey) {
+		if (isset($_GET[$waBootKey]) && (string)$_GET[$waBootKey] !== '') {
+			$waBootQuery[$waBootKey] = (string)$_GET[$waBootKey];
+		}
+	}
+	?><!DOCTYPE html>
+<html lang="ru">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<title>WhatsApp чат</title>
+	<script>
+		window.__WA_CC_QUERY = <?= json_encode($waBootQuery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+		window.__WA_CC_BOOT = <?= json_encode([
+			'mobile' => (bool)$waMobile,
+			'embed' => true,
+			'appBoot' => defined('WA_CC_APP_BOOT'),
+			'userId' => (int)$currentUserId,
+		], JSON_UNESCAPED_UNICODE) ?>;
+		window.waCcParams = function () {
+			var sp = new URLSearchParams(window.location.search || '');
+			var boot = window.__WA_CC_QUERY || {};
+			try {
+				Object.keys(boot).forEach(function (k) {
+					if (boot[k] === null || boot[k] === undefined || boot[k] === '') return;
+					if (!sp.has(k)) sp.set(k, String(boot[k]));
+				});
+			} catch (e) {}
+			return sp;
+		};
+	</script>
+	<?php if ($waLiteHead): ?>
+		<script>window.BX=window.BX||{};BX.message=BX.message||function(){};</script>
+		<script src="/bitrix/js/main/core/core.min.js?v=wa1"></script>
+		<script src="/bitrix/js/main/ajax/ajax.min.js?v=wa1"></script>
+		<script src="/bitrix/js/rest/client/rest.client.min.js?v=wa1"></script>
+		<script>
+			(function(){
+				try {
+					if (window.BX && BX.message) {
+						BX.message({'bitrix_sessid': <?= json_encode($sessId) ?>});
+					}
+					if (window.BX && typeof BX.bitrix_sessid !== 'function') {
+						BX.bitrix_sessid = function () { return <?= json_encode($sessId) ?>; };
+					}
+				} catch (e) {}
+			})();
+		</script>
+	<?php else: ?>
+		<?php $APPLICATION->ShowHead(); ?>
+	<?php endif; ?>
+	<style>
+		html, body.wa-cc-embed {
+			margin: 0; padding: 0; height: 100%; height: 100dvh;
+			overflow: hidden; background: #f0f2f5;
+		}
+		body.wa-cc-embed .wa-app {
+			height: 100vh; height: 100dvh; max-height: 100%;
+			min-height: 0; border-radius: 0; max-width: none;
+			padding-bottom: env(safe-area-inset-bottom, 0);
+			box-sizing: border-box;
+		}
+	</style>
+</head>
+<body class="<?= htmlspecialchars($bodyClass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
+<?php
+} else {
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/header.php';
+	$APPLICATION->SetTitle('Контакт-центр (WhatsApp Web UI)');
+
+	// Разрешить встраивание КЦ в iframe виджета
+	if (class_exists('\\Bitrix\\Main\\Context')) {
+		try {
+			$resp = \Bitrix\Main\Context::getCurrent()->getResponse();
+			$headers = $resp->getHeaders();
+			$headers->delete('X-Frame-Options');
+			$headers->set(
+				'Content-Security-Policy',
+				"frame-ancestors 'self' https://crm.artflowers.kz https://bitrixeazy.vercel.app https://*.vercel.app"
+			);
+		} catch (\Throwable $e) {
+			/* ignore */
+		}
+	}
+
+	if (class_exists('\\Bitrix\\Main\\UI\\Extension')) {
+		try {
+			\Bitrix\Main\UI\Extension::load(['main.core', 'rest.client', 'pull.client', 'ui.notification']);
+		} catch (\Throwable $e) {
+			/* ignore */
+		}
+	}
+	CJSCore::Init(['ajax', 'rest', 'pull', 'popup']);
+
+	global $USER;
+	$currentUserId = (int)$USER->GetID();
+	$currentUserName = '';
+	if ($USER) {
+		if (method_exists($USER, 'GetFormattedName')) {
+			$currentUserName = trim((string)$USER->GetFormattedName());
+		}
+		if ($currentUserName === '') {
+			$currentUserName = trim((string)$USER->GetFullName());
+		}
+		if ($currentUserName === '') {
+			$currentUserName = trim((string)$USER->GetLogin());
+		}
+	}
+}
 ?>
 
 <style>
@@ -361,6 +652,9 @@ $currentUserId = (int)$USER->GetID();
 }
 .wa-chat-item:hover { background: var(--wa-hover); }
 .wa-chat-item.active { background: var(--wa-active); }
+.wa-chat-item.active.from-crm {
+	box-shadow: inset 3px 0 0 #25d366;
+}
 .wa-avatar {
 	width: 49px;
 	height: 49px;
@@ -564,7 +858,8 @@ $currentUserId = (int)$USER->GetID();
 	font-size: 13px;
 	padding: 8px 12px;
 }
-.wa-msg .wa-msg-from { display: block; font-size: 12.5px; font-weight: 600; color: #06cf9c; margin-bottom: 2px; }
+.wa-msg .wa-msg-from { display: block; font-size: 12.5px; font-weight: 600; color: #06cf9c; margin-bottom: 3px; }
+.wa-msg.out .wa-msg-from { color: #1a7f4c; }
 .wa-msg .wa-msg-time { display: block; text-align: right; font-size: 11px; color: var(--wa-muted); margin-top: 2px; margin-left: 12px; float: right; position: relative; top: 4px; }
 .wa-msg .wa-media { margin: 4px 0; clear: both; }
 .wa-msg .wa-media img { max-width: 100%; max-height: 320px; border-radius: 6px; display: block; cursor: pointer; }
@@ -722,6 +1017,124 @@ $currentUserId = (int)$USER->GetID();
 	.wa-sidebar { min-width: 280px; width: 38%; }
 	.wa-messages-container { padding: 12px 4%; }
 }
+
+/* —— Mobile / local app embed —— */
+.wa-back-btn {
+	display: none;
+	align-items: center;
+	justify-content: center;
+	width: 40px;
+	height: 40px;
+	margin: 0 4px 0 -6px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: #54656f;
+	cursor: pointer;
+	flex-shrink: 0;
+	-webkit-tap-highlight-color: transparent;
+}
+.wa-back-btn:active { background: rgba(11, 20, 26, .08); }
+.wa-back-btn svg { display: block; width: 24px; height: 24px; }
+
+body.wa-cc-mobile .wa-app,
+body.wa-cc-embed.wa-cc-mobile .wa-app {
+	height: 100%;
+	height: 100dvh;
+	min-height: 0;
+	max-width: none;
+}
+body.wa-cc-mobile .wa-sidebar {
+	width: 100%;
+	min-width: 0;
+	max-width: none;
+	border-right: 0;
+}
+body.wa-cc-mobile .wa-main {
+	display: none;
+	width: 100%;
+	min-width: 0;
+}
+body.wa-cc-mobile.wa-chat-open .wa-sidebar { display: none; }
+body.wa-cc-mobile.wa-chat-open .wa-main { display: flex; flex-direction: column; }
+body.wa-cc-mobile .wa-back-btn { display: inline-flex; }
+body.wa-cc-mobile .wa-ol-btn,
+body.wa-cc-mobile .wa-icon-btn,
+body.wa-cc-mobile .wa-send-btn,
+body.wa-cc-mobile .wa-tab,
+body.wa-cc-mobile .wa-chat-item {
+	min-height: 44px;
+	-webkit-tap-highlight-color: transparent;
+}
+body.wa-cc-mobile .wa-chat-item { padding: 12px 14px; }
+body.wa-cc-mobile .wa-input-bar textarea {
+	font-size: 16px; /* iOS: без автозума */
+	max-height: 120px;
+}
+body.wa-cc-mobile .wa-footer {
+	padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+}
+body.wa-cc-mobile .wa-main-header {
+	padding-top: max(8px, env(safe-area-inset-top, 0px));
+}
+body.wa-cc-mobile .wa-side-top {
+	padding-top: max(10px, env(safe-area-inset-top, 0px));
+}
+body.wa-cc-mobile .wa-header-actions {
+	flex-wrap: wrap;
+	gap: 6px;
+	justify-content: flex-end;
+}
+body.wa-cc-mobile .wa-ol-btn {
+	font-size: 12px;
+	padding: 8px 10px;
+}
+
+@media (max-width: 720px) {
+	/* только обычная страница / телефон; desktop-embed не схлопываем */
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop) .wa-app {
+		height: 100vh;
+		height: 100dvh;
+		min-height: 0;
+		max-width: none;
+	}
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop) .wa-sidebar {
+		width: 100%;
+		min-width: 0;
+		max-width: none;
+		border-right: 0;
+	}
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop) .wa-main { display: none; width: 100%; }
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop).wa-chat-open .wa-sidebar { display: none; }
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop).wa-chat-open .wa-main { display: flex; flex-direction: column; }
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop) .wa-back-btn { display: inline-flex; }
+	body:not(.wa-cc-mobile):not(.wa-cc-desktop) .wa-input-bar textarea { font-size: 16px; }
+}
+
+/* Desktop embed (локальное приложение на ПК): всегда список + чат */
+body.wa-cc-desktop.wa-cc-embed .wa-app {
+	display: flex;
+	height: 100%;
+	height: 100dvh;
+	min-height: 0;
+	max-width: none;
+}
+body.wa-cc-desktop .wa-sidebar {
+	display: flex !important;
+	width: 34%;
+	min-width: 280px;
+	max-width: 420px;
+	border-right: 1px solid var(--wa-border);
+}
+body.wa-cc-desktop .wa-main {
+	display: flex !important;
+	flex: 1;
+	min-width: 0;
+	flex-direction: column;
+}
+body.wa-cc-desktop .wa-back-btn { display: none !important; }
+body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 </style>
 
 <div class="wa-app">
@@ -745,6 +1158,9 @@ $currentUserId = (int)$USER->GetID();
 
 	<div class="wa-main">
 		<div class="wa-main-header" id="wa-active-header">
+			<button type="button" class="wa-back-btn" id="wa-btn-back" title="Назад к списку" aria-label="Назад">
+				<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+			</button>
 			<div class="wa-avatar" id="wa-active-avatar" style="background:#dfe5e7;display:none;"></div>
 			<div class="wa-main-header-info">
 				<div class="title" id="wa-active-title">Выберите чат</div>
@@ -796,11 +1212,41 @@ $currentUserId = (int)$USER->GetID();
 </div>
 
 <script>
-BX.ready(function () {
+(function waCcBoot(startFn) {
+	var tries = 0;
+	function run() {
+		if (typeof window.BX !== 'undefined' && typeof BX.ready === 'function') {
+			BX.ready(startFn);
+			return;
+		}
+		tries++;
+		if (tries === 1) {
+			// ядро не успело / SidePanel iframe без core — догружаем
+			var urls = [
+				'/bitrix/js/main/core/core.min.js',
+				'/bitrix/js/main/core/core.js'
+			];
+			for (var i = 0; i < urls.length; i++) {
+				var s = document.createElement('script');
+				s.src = urls[i];
+				s.async = false;
+				document.head.appendChild(s);
+			}
+		}
+		if (tries > 100) {
+			console.error('WA CC: BX не загрузился (SidePanel/iframe). Открой КЦ в обычной вкладке.');
+			return;
+		}
+		setTimeout(run, 50);
+	}
+	run();
+})(function () {
 	const CURRENT_USER_ID = <?= (int)$currentUserId ?>;
+	const CURRENT_USER_NAME = <?= json_encode((string)($currentUserName ?? ''), JSON_UNESCAPED_UNICODE) ?>;
 	const CLOSED_LINE_STATUSES = [50, 60, 70, 80];
 	const MESSAGES_PAGE = 80;
 	let currentDialogId = null;
+	let crmFocusDialogId = null;
 	let currentChatId = null;
 	let currentChatIsOpenLine = false;
 	let currentChatData = null;
@@ -812,6 +1258,7 @@ BX.ready(function () {
 	let historyLoading = false;
 	let sending = false;
 	let filesMap = {};
+	let usersMap = {};
 	let chatsCache = [];
 	let searchQuery = '';
 	let listFilter = 'all';
@@ -821,6 +1268,7 @@ BX.ready(function () {
 	const failedPhoneLookups = new Set();
 	const failedUserCodeLookups = new Set();
 	const failedCrmEntityChatLookups = new Set();
+	const olIdResolveCache = new Map();
 	const crmNameCache = new Map();
 
 	const listEl = document.getElementById('wa-chat-list');
@@ -833,6 +1281,7 @@ BX.ready(function () {
 	const btnFinish = document.getElementById('wa-btn-finish');
 	const btnLead = document.getElementById('wa-btn-lead');
 	const btnDeal = document.getElementById('wa-btn-deal');
+	const btnBack = document.getElementById('wa-btn-back');
 	const activeAvatar = document.getElementById('wa-active-avatar');
 	const inputBar = document.getElementById('wa-input-bar');
 	const inputEl = document.getElementById('wa-input');
@@ -1114,14 +1563,19 @@ BX.ready(function () {
 		return parseInt(chat.counter || 0, 10) > 0 || !!chat.unread;
 	}
 
+	function isPinnedCrmChat(chat) {
+		const did = resolveDialogId(chat);
+		return !!(did && (did === crmFocusDialogId || did === currentDialogId));
+	}
+
 	function applyListFilter(items) {
 		items = items.filter(isOpenLine);
 		if (listFilter === 'unread') items = items.filter(isChatUnread);
-		else if (listFilter === 'groups') items = items.filter(isWhatsAppGroupChat);
-		else items = items.filter(c => !isWhatsAppGroupChat(c));
+		else if (listFilter === 'groups') items = items.filter(c => isWhatsAppGroupChat(c) || isPinnedCrmChat(c));
+		else items = items.filter(c => !isWhatsAppGroupChat(c) || isPinnedCrmChat(c));
 
 		if (!searchQuery.trim()) {
-			items = items.filter(c => !isChatClosed(c));
+			items = items.filter(c => !isChatClosed(c) || isPinnedCrmChat(c));
 		}
 		return items;
 	}
@@ -1154,7 +1608,7 @@ BX.ready(function () {
 			base = base.filter(function (c) { return matchesChatSearch(c, searchQuery); });
 		}
 		if (!searchQuery.trim()) {
-			base = base.filter(function (c) { return !isChatClosed(c); });
+			base = base.filter(function (c) { return !isChatClosed(c) || isPinnedCrmChat(c); });
 		}
 		return base;
 	}
@@ -1217,11 +1671,14 @@ BX.ready(function () {
 		}
 		const msg = params.message;
 		const files = params.files || params.file;
+		if (params.users) mergeUsers(params.users);
 		if (files) mergeFiles(Array.isArray(files) ? files : Object.values(files));
 		if (msg && msg.id) {
 			hydrateFilesFromMessages([msg]);
 			prefetchFileUrls(getFileIds(msg));
-			appendMessages([msg], false);
+			ensureUsersLoaded(collectMessageAuthorIds([msg])).then(function () {
+				appendMessages([msg], false);
+			});
 		} else refreshTail().catch(() => {});
 		if (currentDialogId) rest('im.dialog.read', { DIALOG_ID: currentDialogId }).catch(() => {});
 		loadChatList();
@@ -1692,12 +2149,39 @@ BX.ready(function () {
 	}
 
 	function matchConnectorOperatorPrefix(text) {
-		// Green-API: [b]WhatsApp Green-Api.com[/b] или [b]...[/b]: текст
+		// Green-API: [b]WhatsApp Green-Api.com[/b] или [b]Имя[/b]: текст
 		return (text || '').match(/^\s*\[(?:b|B)\]([^\]]+)\[\/(?:b|B)\]\s*:?\s*/);
 	}
 
+	function messageAuthorId(msg) {
+		if (!msg) return 0;
+		return parseInt(
+			msg.authorId || msg.AUTHOR_ID || msg.author_id ||
+			msg.senderId || msg.SENDER_ID || msg.sender_id ||
+			0,
+			10
+		) || 0;
+	}
+
+	function isConnectorOperatorLabel(label) {
+		return /whatsapp|green-?api|chatapp|wazzup|telegram|open.?line|открыт(ая|ой)\s+лин/i.test(String(label || ''));
+	}
+
+	function isSystemSenderLabel(label) {
+		return /контактная информация|сохранена в (лид|контакт|компани)|начат новый диалог|обращение направлен|завершил[аи]? работу|начал[аи]? работу|диалог закрыт|перевед[её]н/i.test(String(label || ''));
+	}
+
+	function isUsableSenderLabel(label) {
+		const s = String(label || '').trim();
+		if (!s) return false;
+		if (isConnectorOperatorLabel(s)) return false;
+		if (isSystemSenderLabel(s)) return false;
+		return true;
+	}
+
 	function isConnectorOperatorText(text) {
-		return !!matchConnectorOperatorPrefix(text);
+		const from = parseConnectorFrom(text);
+		return !!(from && isConnectorOperatorLabel(from));
 	}
 
 	function parseConnectorFrom(text) {
@@ -1705,38 +2189,260 @@ BX.ready(function () {
 		return m ? m[1].trim() : null;
 	}
 
-	function stripConnectorPrefix(text) {
-		return (text || '').replace(/^\s*\[(?:b|B)\][^\]]+\[\/(?:b|B)\]\s*:?\s*/i, '');
+	function messageRawText(msg) {
+		if (!msg) return '';
+		return String(
+			msg.text || msg.MESSAGE || msg.message || msg.message_out || ''
+		);
 	}
 
-	function isConnectorOperatorMessage(msg) {
-		if (isConnectorOperatorText(msg.text || '')) return true;
-		const p = msgParams(msg);
-		// иногда Bitrix помечает исходящие через коннектор
-		if (p.CONNECTOR || p.FROM_CONNECTOR || p.IMOL_FORM || p.IMOL_COMMENT) return true;
+	function parsePlainNamePrefix(text) {
+		const t = String(text || '');
+		let m = t.match(/^\s*\*([^*\n]{2,80})\*\s*:?\s*/);
+		if (m) return { name: m[1].trim(), rest: t.slice(m[0].length) };
+		m = t.match(/^\s*([^\n:]{2,80})\s*\(\+?\d[\d\s\-]{8,}\)\s*:\s*/);
+		if (m) return { name: m[1].trim(), rest: t.slice(m[0].length) };
+		// патч 1os / Green-API: «Салта Опт 77775215321\nтекст» или «Салта Опт 77775215321: текст»
+		m = t.match(/^\s*([^\n\[\*]{2,60}?)\s+(\d{10,15})\s*(?:\n|:)\s*/);
+		if (m) {
+			const name = (m[1].trim() + ' ' + m[2]).trim();
+			return { name: name, rest: t.slice(m[0].length) };
+		}
+		m = t.match(/^\s*(\d{10,15})\s*(?:\n|:)\s*/);
+		if (m) return { name: m[1], rest: t.slice(m[0].length) };
+		return null;
+	}
+
+	function parseHumanSenderFromText(text) {
+		let t = String(text || '').replace(/^\uFEFF/, '');
+		// HTML после конвертации BB: <b>Имя</b>
+		while (true) {
+			const m = t.match(/^\s*<b>([^<]{1,80})<\/b>\s*:?\s*(?:<br\s*\/?>)?\s*/i);
+			if (!m) break;
+			const label = m[1].replace(/&nbsp;/g, ' ').trim();
+			t = t.slice(m[0].length);
+			if (label && isUsableSenderLabel(label)) return label;
+		}
+		while (true) {
+			const m = t.match(/^\s*\[(?:b|B)\]([^\]]+)\[\/(?:b|B)\]\s*:?\s*(?:\n|\[br\]|<br\s*\/?>)?\s*/i);
+			if (!m) break;
+			const label = m[1].trim();
+			t = t.slice(m[0].length);
+			if (label && isUsableSenderLabel(label)) return label;
+		}
+		const plain = parsePlainNamePrefix(t);
+		if (plain && plain.name && isUsableSenderLabel(plain.name)) return plain.name;
+		return '';
+	}
+
+	function stripConnectorPrefix(text) {
+		let t = String(text || '');
+		while (/^\s*<b>[^<]+<\/b>\s*:?\s*(?:<br\s*\/?>)?\s*/i.test(t)) {
+			t = t.replace(/^\s*<b>[^<]+<\/b>\s*:?\s*(?:<br\s*\/?>)?\s*/i, '');
+		}
+		while (/^\s*\[(?:b|B)\][^\]]+\[\/(?:b|B)\]\s*:?\s*(?:\n|\[br\]|<br\s*\/?>)?\s*/i.test(t)) {
+			t = t.replace(/^\s*\[(?:b|B)\][^\]]+\[\/(?:b|B)\]\s*:?\s*(?:\n|\[br\]|<br\s*\/?>)?\s*/i, '');
+		}
+		const plain = parsePlainNamePrefix(t);
+		if (plain) return plain.rest;
+		return t;
+	}
+
+	function isConnectorGuestUser(user) {
+		if (!user) return false;
+		if (user.bot === true || user.isBot === true) return false;
+		const type = String(user.type || '').toLowerCase();
+		if (type === 'bot') return false;
+		const ext = String(user.external_auth_id || user.externalAuthId || user.EXTERNAL_AUTH_ID || '').toLowerCase();
+		if (/imconnector|connector|whatsapp|bot|replica/i.test(ext)) return true;
+		if (type === 'extranet' || type === 'guest' || type === 'lines') return true;
+		if (user.extranet === true || user.extranet === 'Y') return true;
 		return false;
 	}
 
+	function isStaffPortalUser(user) {
+		if (!user) return false;
+		if (user.bot === true || user.isBot === true) return false;
+		const type = String(user.type || '').toLowerCase();
+		if (type === 'bot') return false;
+		if (isConnectorGuestUser(user)) return false;
+		const id = parseInt(user.id || user.ID, 10);
+		if (id > 0 && id === CURRENT_USER_ID) return true;
+		if (type === 'employee' || type === 'user' || type === '') {
+			if (user.extranet === false || user.extranet === 'N') return true;
+			if (user.work_position || user.workPosition || user.department) return true;
+			const ext = String(user.external_auth_id || user.externalAuthId || user.EXTERNAL_AUTH_ID || '').toLowerCase();
+			if (!ext) return true;
+		}
+		return false;
+	}
+
+	function isConnectorOperatorMessage(msg) {
+		return isConnectorOperatorText(msg.text || '');
+	}
+
+	function mergeUsers(users) {
+		if (!users) return;
+		if (Array.isArray(users)) {
+			users.forEach(function (u) {
+				const id = parseInt(u && (u.id || u.ID), 10);
+				if (id) usersMap[id] = Object.assign(usersMap[id] || {}, u);
+			});
+			return;
+		}
+		if (typeof users === 'object') {
+			Object.keys(users).forEach(function (k) {
+				const u = users[k];
+				if (!u || typeof u !== 'object') return;
+				const id = parseInt(u.id || u.ID || k, 10);
+				if (id) usersMap[id] = Object.assign(usersMap[id] || {}, u);
+			});
+		}
+	}
+
+	function collectMessageAuthorIds(messages) {
+		const ids = [];
+		(messages || []).forEach(function (msg) {
+			const authorId = messageAuthorId(msg);
+			if (authorId > 0) ids.push(authorId);
+			const p = msgParams(msg);
+			const opId = parseInt(p.OPERATOR_ID || p.operatorId || 0, 10);
+			if (opId > 0 && opId !== CURRENT_USER_ID) ids.push(opId);
+		});
+		return ids;
+	}
+
+	async function ensureUsersLoaded(ids) {
+		const missing = [];
+		(ids || []).forEach(function (id) {
+			id = parseInt(id, 10);
+			if (id > 0 && !userDisplayName(usersMap[id])) missing.push(id);
+		});
+		if (!missing.length) return;
+		const uniq = Array.from(new Set(missing));
+		try {
+			const data = await rest('im.user.list.get', { ID: uniq });
+			mergeUsers(data);
+		} catch (e) {
+			try {
+				const data = await rest('user.get', { FILTER: { ID: uniq.join('|') }, ADMIN_MODE: 'N' });
+				mergeUsers(data);
+			} catch (e2) {
+				for (let i = 0; i < uniq.length; i++) {
+					try {
+						const one = await rest('user.get', { ID: uniq[i] });
+						mergeUsers(Array.isArray(one) ? one : [one]);
+					} catch (e3) {}
+				}
+			}
+		}
+	}
+
+	function userDisplayName(user) {
+		if (!user) return '';
+		const n = String(user.name || user.NAME || '').trim();
+		if (n) return n;
+		const first = String(user.first_name || user.FIRST_NAME || user.firstName || '').trim();
+		const last = String(user.last_name || user.LAST_NAME || user.lastName || '').trim();
+		return [first, last].filter(Boolean).join(' ');
+	}
+
+	function senderColor(name) {
+		const colors = ['#06cf9c', '#02a698', '#53bdeb', '#a855f7', '#ef4444', '#f59e0b', '#ec4899', '#3b82f6', '#14b8a6', '#e11d48'];
+		let h = 0;
+		const s = String(name || '');
+		for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+		return colors[h % colors.length];
+	}
+
+	function getIncomingSenderName(msg) {
+		const human = parseHumanSenderFromText(messageRawText(msg));
+		if (human) return human;
+		// в группе OL-гость один на весь чат (часто «Юлия») — это не автор сообщения
+		if (currentChatData && isWhatsAppGroupChat(currentChatData)) return '';
+		const p = msgParams(msg);
+		const fromP = p.NAME || p.AUTHOR_NAME || p.USER_NAME || p.IMOL_USER_NAME
+			|| p.FROM || p.senderName || p.SENDER_NAME || p.name;
+		if (fromP && typeof fromP === 'string' && fromP.trim() && !isConnectorOperatorLabel(fromP)) {
+			return fromP.trim();
+		}
+		const authorId = messageAuthorId(msg);
+		if (authorId && authorId !== CURRENT_USER_ID) {
+			const n = userDisplayName(usersMap[authorId]);
+			if (n && !isConnectorOperatorLabel(n)) return n;
+		}
+		return '';
+	}
+
+	function isViewerStamp(name, authorId) {
+		if (!CURRENT_USER_NAME) return false;
+		if (parseInt(authorId || 0, 10) === CURRENT_USER_ID) return false;
+		return String(name || '').trim() === CURRENT_USER_NAME;
+	}
+
+	function getOutgoingSenderName(msg) {
+		const authorId = messageAuthorId(msg);
+		if (authorId === CURRENT_USER_ID && CURRENT_USER_NAME) return CURRENT_USER_NAME;
+		if (authorId > 0) {
+			const n = userDisplayName(usersMap[authorId]);
+			if (n && !isConnectorOperatorLabel(n) && !isViewerStamp(n, authorId)) return n;
+		}
+		const human = parseHumanSenderFromText(messageRawText(msg));
+		if (human && !isViewerStamp(human, authorId)) return human;
+		const p = msgParams(msg);
+		const fromP = p.AUTHOR_NAME || p.OPERATOR_NAME || p.MANAGER_NAME;
+		if (fromP && typeof fromP === 'string' && fromP.trim()
+			&& !isConnectorOperatorLabel(fromP) && !isViewerStamp(fromP, authorId)) {
+			return fromP.trim();
+		}
+		const opId = parseInt(p.OPERATOR_ID || p.operatorId || 0, 10);
+		if (opId > 0 && opId !== CURRENT_USER_ID) {
+			const n = userDisplayName(usersMap[opId]);
+			if (n && !isConnectorOperatorLabel(n)) return n;
+		}
+		return '';
+	}
+
+	function seedCurrentUser() {
+		if (CURRENT_USER_ID && CURRENT_USER_NAME) {
+			usersMap[CURRENT_USER_ID] = Object.assign(usersMap[CURRENT_USER_ID] || {}, {
+				id: CURRENT_USER_ID,
+				name: CURRENT_USER_NAME
+			});
+		}
+	}
+
 	function isSystemMessage(msg) {
-		const authorId = parseInt(msg.author_id || msg.senderId || 0, 10);
-		if (authorId !== 0) return false;
 		const text = msg.text || '';
+		if (/начал работу с диалогом|завершил работу|диалог закрыт|перевед[её]н|поставил оценку|пригласил|покинул|начат новый диалог|контактная информация сохранена|обращение направлено/i.test(text)) {
+			return true;
+		}
+		if (/\[USER=\d+/i.test(text) && /начал|завершил|пригласил|покинул|направлен/i.test(text)) {
+			return true;
+		}
+		const authorId = messageAuthorId(msg);
+		if (authorId !== 0) return false;
 		if (isConnectorOperatorMessage(msg)) return false;
+		if (parseConnectorFrom(text) && !isConnectorOperatorLabel(parseConnectorFrom(text))) return false;
+		if (parsePlainNamePrefix(text)) return false;
 		if (getFileIds(msg).length) return false;
 		const p = msgParams(msg);
-		const code = p.CODE;
-		if (code && (Array.isArray(code) ? code.length : true)) return true;
-		if (/начал работу с диалогом|завершил работу|диалог закрыт|перевед[её]н|поставил оценку|пригласил|покинул/i.test(text)) return true;
-		if (/\[USER=\d+/i.test(text)) return true;
+		const code = Array.isArray(p.CODE) ? String(p.CODE[0] || '') : String(p.CODE || '');
+		if (/^(SYSTEM|IMOL_|CHAT_|NOTIFY)/i.test(code)) return true;
 		return false;
 	}
 
 	function isOutgoingMessage(msg) {
-		const authorId = parseInt(msg.author_id || msg.senderId || 0, 10);
+		const authorId = messageAuthorId(msg);
 		if (authorId === CURRENT_USER_ID) return true;
-		// менеджер писал через WhatsApp/Green-API — author_id часто 0
-		if (isConnectorOperatorMessage(msg)) return true;
-		return false;
+		if (authorId > 0) {
+			const u = usersMap[authorId];
+			if (!u) return true;
+			if (isConnectorGuestUser(u)) return false;
+			if (isStaffPortalUser(u)) return true;
+			return false;
+		}
+		return isConnectorOperatorText(msg.text || '');
 	}
 
 	function parseBbCode(raw) {
@@ -1915,17 +2621,117 @@ BX.ready(function () {
 		return null;
 	}
 
-	async function chatItemFromDialogChatId(chatId) {
-		const data = await rest('imopenlines.dialog.get', { CHAT_ID: parseInt(chatId, 10) });
-		const dialog = data.result || data;
-		const item = dialogToChatItem(dialog, null);
-		if (!item) return null;
-		if (!isChatClosed(item) && !item.lines) {
-			item.lines = { status: 50 };
-			item._waClosed = true;
-		}
+	async function resolveOlRawId(rawId) {
+		const id = parseInt(rawId, 10);
+		if (!id) return null;
+		if (olIdResolveCache.has(id)) return olIdResolveCache.get(id);
+		const pending = (async function () {
+			try {
+				const r = await fetch('/local/custom_chat/?wa_resolve_ol=' + id, { credentials: 'same-origin' });
+				if (!r.ok) return null;
+				return await r.json();
+			} catch (e) {
+				return null;
+			}
+		})();
+		olIdResolveCache.set(id, pending);
+		return pending;
+	}
+
+	function chatItemFromResolvedMeta(meta, extra) {
+		const chatId = parseInt(meta && meta.chatId, 10);
+		if (!chatId) return null;
+		const title = (meta.title || (extra && extra.title) || ('Чат #' + chatId));
+		const userCode = (meta.userCode || '');
+		const closed = !!(meta.closed || (extra && extra.closed));
+		const item = {
+			id: 'chat' + chatId,
+			dialog_id: 'chat' + chatId,
+			chat_id: chatId,
+			title: title,
+			type: 'lines',
+			entity_type: 'LINES',
+			entity_id: userCode,
+			counter: 0,
+			_fromCrm: true,
+			_waClosed: closed,
+			lines: { status: closed ? 50 : 0 },
+			chat: {
+				id: chatId,
+				type: 'lines',
+				entity_type: 'LINES',
+				entity_id: userCode,
+				name: title
+			},
+			message: {
+				text: (extra && extra.preview) || '',
+				date: (extra && extra.date) || ''
+			}
+		};
 		item._phones = getChatPhones(item);
 		return item;
+	}
+
+	async function chatItemFromDialogChatId(rawId) {
+		const id = parseInt(rawId, 10);
+		if (!id) return null;
+
+		let meta = null;
+		try {
+			meta = await resolveOlRawId(id);
+		} catch (e) {
+			meta = null;
+		}
+		const chatId = parseInt(meta && meta.chatId, 10) || 0;
+		const userCode = String((meta && meta.userCode) || '');
+		const resolvedId = chatId || id;
+
+		// На коробке CHAT_ID/SESSION_ID → 400; USER_CODE обычно ок
+		if (userCode) {
+			try {
+				const data = await rest('imopenlines.dialog.get', { USER_CODE: userCode });
+				const dialog = data.result || data;
+				const item = dialogToChatItem(dialog, null);
+				if (item) {
+					if (meta && meta.closed) {
+						item._waClosed = true;
+						if (!item.lines) item.lines = { status: 50 };
+					}
+					item._phones = getChatPhones(item);
+					return item;
+				}
+			} catch (e) { /* synthetic below */ }
+		}
+
+		// Не дёргаем imopenlines.dialog.get(CHAT_ID) / im.dialog.get — 400/403 в консоли
+		if (meta && (chatId || userCode || meta.title)) {
+			return chatItemFromResolvedMeta(meta, { closed: !!(meta && meta.closed) });
+		}
+
+		try {
+			const data = await rest('im.dialog.get', { DIALOG_ID: 'chat' + resolvedId });
+			const dialog = (data && data.result) || data || {};
+			const chat = dialog.chat || dialog;
+			const fake = {
+				id: parseInt(chat.id || resolvedId, 10),
+				dialog_id: dialog.dialog_id || ('chat' + resolvedId),
+				name: chat.name || chat.title || '',
+				type: chat.type || 'lines',
+				entity_type: chat.entity_type || 'LINES',
+				entity_id: chat.entity_id || '',
+				entity_data_1: chat.entity_data_1,
+				entity_data_2: chat.entity_data_2,
+				entity_data_3: chat.entity_data_3,
+				lines: chat.lines
+			};
+			const item = dialogToChatItem(fake, null);
+			if (item) {
+				item._phones = getChatPhones(item);
+				return item;
+			}
+		} catch (e) { /* ignore */ }
+
+		return null;
 	}
 
 	async function collectChatIdsForCrmEntity(entityType, entityId, chatIds) {
@@ -2275,13 +3081,15 @@ BX.ready(function () {
 		div.dataset.id = msg.id;
 
 		let body = '';
-		const from = parseConnectorFrom(msg.text || '');
-		let rawText = msg.text || '';
-		if (from && !system) {
-			if (!out) {
-				body += '<span class="wa-msg-from">' + BX.util.htmlspecialchars(from) + '</span>';
-			}
-			rawText = stripConnectorPrefix(rawText);
+		let fromName = '';
+		if (!system) {
+			fromName = out ? getOutgoingSenderName(msg) : getIncomingSenderName(msg);
+		}
+		let rawText = stripConnectorPrefix(messageRawText(msg));
+		if (fromName) {
+			const color = out ? '#1a7f4c' : senderColor(fromName);
+			body += '<span class="wa-msg-from" style="color:' + color + '">'
+				+ BX.util.htmlspecialchars(fromName) + '</span>';
 		}
 		body += renderFilesHtml(msg);
 		if (rawText.trim()) body += '<span class="wa-msg-text">' + parseBbCode(rawText) + '</span>';
@@ -2454,6 +3262,7 @@ BX.ready(function () {
 			const item = document.createElement('div');
 			item.className = 'wa-chat-item' +
 				(dialogId === currentDialogId ? ' active' : '') +
+				(dialogId === crmFocusDialogId ? ' from-crm' : '') +
 				(closed ? ' is-closed' : '');
 			item.dataset.dialogId = dialogId;
 			if (phone) item.dataset.phone = phone;
@@ -2476,6 +3285,15 @@ BX.ready(function () {
 			item.addEventListener('click', () => openDialog(chat));
 			listEl.appendChild(item);
 		});
+
+		const activeEl = listEl.querySelector('.wa-chat-item.active');
+		if (activeEl && typeof activeEl.scrollIntoView === 'function') {
+			try {
+				activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+			} catch (e) {
+				activeEl.scrollIntoView(false);
+			}
+		}
 	}
 
 	async function loadChatList() {
@@ -2486,9 +3304,15 @@ BX.ready(function () {
 				list = (all || []).filter(isOpenLine);
 			}
 
-			chatsCache = mergeChatLists(list).map(chat => {
+			const keep = [];
+			if (currentChatData) keep.push(currentChatData);
+			if (crmFocusDialogId) {
+				const pin = chatsCache.find(function (c) { return resolveDialogId(c) === crmFocusDialogId; });
+				if (pin) keep.push(pin);
+			}
+			chatsCache = mergeChatLists(keep, list).map(chat => {
 				chat._phones = getChatPhones(chat);
-				if (isChatClosed(chat)) markChatClosed(chat);
+				if (isChatClosed(chat) && !isPinnedCrmChat(chat)) markChatClosed(chat);
 				return chat;
 			});
 			await enrichChatDisplayNames(chatsCache);
@@ -2513,6 +3337,8 @@ BX.ready(function () {
 		hasMoreHistory = true;
 		historyLoading = false;
 		filesMap = {};
+		usersMap = {};
+		seedCurrentUser();
 		try {
 			const data = await rest('im.dialog.messages.get', {
 				DIALOG_ID: dialogId,
@@ -2520,8 +3346,24 @@ BX.ready(function () {
 			});
 			const messages = data.messages || [];
 			if (data.chat_id) currentChatId = data.chat_id;
+			mergeUsers(data.users);
 			mergeFiles(data.files);
 			hydrateFilesFromMessages(messages);
+			if (/\bwa_debug_senders=1\b/.test(String(location.search || ''))) {
+				const rows = (messages || []).slice(0, 20).map(function (m) {
+					const raw = messageRawText(m);
+					return {
+						id: m.id,
+						author: messageAuthorId(m),
+						out: isOutgoingMessage(m),
+						parsed: parseHumanSenderFromText(raw),
+						text: raw.slice(0, 160)
+					};
+				});
+				console.log('WA CC senders debug', rows);
+				try { console.table(rows); } catch (e) {}
+			}
+			await ensureUsersLoaded(collectMessageAuthorIds(messages));
 			await prefetchFileUrls(collectFileIdsFromMessages(messages));
 			appendMessages(messages, true);
 			hasMoreHistory = messages.length >= MESSAGES_PAGE;
@@ -2543,12 +3385,14 @@ BX.ready(function () {
 				LIMIT: MESSAGES_PAGE
 			});
 			const messages = data.messages || [];
+			mergeUsers(data.users);
 			mergeFiles(data.files);
 			hydrateFilesFromMessages(messages);
 			if (!messages.length) {
 				hasMoreHistory = false;
 				return;
 			}
+			await ensureUsersLoaded(collectMessageAuthorIds(messages));
 			await prefetchFileUrls(collectFileIdsFromMessages(messages));
 			const beforeFirst = firstMessageId;
 			prependMessages(messages);
@@ -2584,12 +3428,61 @@ BX.ready(function () {
 		uploadHint.style.display = 'none';
 		inputEl.value = '';
 		updateSendButton();
+		try {
+			document.body.classList.add('wa-chat-open');
+		} catch (e) { /* ignore */ }
 		inputEl.focus();
 		renderChatList();
 		await loadMessages(dialogId);
 		await refreshSessionState();
 		startChatPolling();
 	};
+
+	function closeMobileChatView() {
+		try {
+			document.body.classList.remove('wa-chat-open');
+		} catch (e) { /* ignore */ }
+	}
+
+	if (btnBack) {
+		btnBack.addEventListener('click', function (e) {
+			try { if (e && e.preventDefault) e.preventDefault(); } catch (err) { /* ignore */ }
+			closeMobileChatView();
+		});
+	}
+
+	(function detectMobileEmbed() {
+		try {
+			const sp = (typeof window.waCcParams === 'function')
+				? window.waCcParams()
+				: new URLSearchParams(window.location.search);
+			const boot = window.__WA_CC_BOOT || {};
+			// PHP уже выставил класс при app-include — не ломаем desktop-веткой без URL-флагов
+			if (document.body.classList.contains('wa-cc-mobile') || boot.mobile) {
+				document.body.classList.add('wa-cc-mobile');
+				document.body.classList.remove('wa-cc-desktop');
+				return;
+			}
+			if (sp.get('wa_desktop') === '1') {
+				document.body.classList.add('wa-cc-desktop');
+				document.body.classList.remove('wa-cc-mobile');
+				return;
+			}
+			if (sp.get('wa_mobile') === '1') {
+				document.body.classList.add('wa-cc-mobile');
+				document.body.classList.remove('wa-cc-desktop');
+				return;
+			}
+			// embed без флагов: не схлопывать по ширине слайдера Bitrix
+			if (sp.get('wa_embed') === '1') {
+				document.body.classList.add('wa-cc-desktop');
+				return;
+			}
+			if (window.matchMedia && window.matchMedia('(max-width: 720px)').matches) {
+				document.body.classList.add('wa-cc-mobile');
+			}
+		} catch (e) { /* ignore */ }
+	})();
 
 	function getEntityData2(chat, dialog) {
 		if (dialog && dialog.entity_data_2) return dialog.entity_data_2;
@@ -2837,8 +3730,10 @@ BX.ready(function () {
 			LIMIT: 20
 		});
 		const messages = data.messages || [];
+		mergeUsers(data.users);
 		mergeFiles(data.files);
 		hydrateFilesFromMessages(messages);
+		await ensureUsersLoaded(collectMessageAuthorIds(messages));
 		await prefetchFileUrls(collectFileIdsFromMessages(messages));
 		appendMessages(messages, false);
 	}
@@ -3373,17 +4268,545 @@ BX.ready(function () {
 	loadChatList();
 	setInterval(loadChatList, 30000);
 
-	/* Deep-link из виджета BitrixEasy: ?chatId= / ?dialogId= */
+	async function fetchCrmPhonesForEntity(entityType, entityId) {
+		const type = String(entityType || '').toLowerCase();
+		const id = parseInt(entityId, 10);
+		const phones = new Set();
+		if (!type || !id) return { phones: [], contactId: 0, dealIds: [] };
+
+		const pushPhone = function (v) {
+			if (v == null || v === '') return;
+			if (Array.isArray(v)) {
+				v.forEach(pushPhone);
+				return;
+			}
+			if (typeof v === 'object') {
+				pushPhone(v.VALUE || v.value);
+				return;
+			}
+			const d = buildWaPhoneDigits(v);
+			if (d.length >= 10) phones.add(d);
+		};
+		const pushFromFm = function (fm) {
+			if (!fm || typeof fm !== 'object') return;
+			Object.keys(fm).forEach(function (key) {
+				pushPhone(fm[key]);
+			});
+		};
+		const pushFromEntity = function (ent) {
+			if (!ent || typeof ent !== 'object') return;
+			pushPhone(ent.PHONE);
+			pushPhone(ent.PHONE_MOBILE);
+			pushPhone(ent.PHONE_WORK);
+			pushFromFm(ent.FM);
+		};
+
+		let contactId = 0;
+		const dealIds = [];
+
+		if (type === 'deal') {
+			dealIds.push(id);
+			const contactIds = new Set();
+			try {
+				const deal = await rest('crm.deal.get', { id: id });
+				const d = (deal && deal.result) || deal || {};
+				contactId = parseInt(d.CONTACT_ID, 10) || 0;
+				if (contactId) contactIds.add(contactId);
+				pushFromEntity(d);
+				const companyId = parseInt(d.COMPANY_ID, 10) || 0;
+				if (companyId) {
+					try {
+						const comp = await rest('crm.company.get', { id: companyId });
+						pushFromEntity((comp && comp.result) || comp || {});
+					} catch (e) {}
+				}
+			} catch (e) {}
+			try {
+				const items = await rest('crm.deal.contact.items.get', { id: id });
+				const list = Array.isArray(items) ? items : (items && items.result) || [];
+				(list || []).forEach(function (row) {
+					const cid = parseInt(row.CONTACT_ID || row.contactId || row.ID, 10) || 0;
+					if (cid) {
+						contactIds.add(cid);
+						if (!contactId) contactId = cid;
+					}
+				});
+			} catch (e) {}
+			const cids = Array.from(contactIds);
+			for (let ci = 0; ci < cids.length && ci < 8; ci++) {
+				try {
+					const cGet = await rest('crm.contact.get', { id: cids[ci] });
+					pushFromEntity((cGet && cGet.result) || cGet || {});
+				} catch (e) {}
+			}
+		} else if (type === 'lead') {
+			try {
+				const leadGet = await rest('crm.lead.get', { id: id });
+				const l = (leadGet && leadGet.result) || leadGet || {};
+				pushFromEntity(l);
+				contactId = parseInt(l.CONTACT_ID, 10) || 0;
+			} catch (e) {}
+		} else if (type === 'contact') {
+			contactId = id;
+		}
+
+		if (contactId) {
+			try {
+				const cGet = await rest('crm.contact.get', { id: contactId });
+				pushFromEntity((cGet && cGet.result) || cGet || {});
+			} catch (e) {}
+			// другие сделки того же контакта — чат часто висит на старой
+			if (type === 'deal') {
+				try {
+					const deals = await rest('crm.deal.list', {
+						filter: { CONTACT_ID: contactId },
+						select: ['ID'],
+						order: { ID: 'DESC' },
+						start: 0
+					});
+					const rows = Array.isArray(deals) ? deals : (deals && deals.result) || [];
+					(rows || []).forEach(function (row) {
+						const did = parseInt(row.ID || row.id, 10);
+						if (did) dealIds.push(did);
+					});
+				} catch (e) {}
+			}
+		}
+
+		return {
+			phones: Array.from(phones),
+			contactId: contactId,
+			dealIds: Array.from(new Set(dealIds)).slice(0, 15)
+		};
+	}
+
+	function getAllOlMetasFromCache() {
+		const out = [];
+		const seen = new Set();
+		(chatsCache || []).forEach(function (chat) {
+			const eid = (chat.chat && chat.chat.entity_id) || chat.entity_id || '';
+			const parts = String(eid).split('|');
+			if (parts.length < 2 || !parts[0] || !parts[1]) return;
+			const key = parts[0] + '|' + parts[1];
+			if (seen.has(key)) return;
+			seen.add(key);
+			out.push({ connector: parts[0], lineId: parts[1] });
+		});
+		return out;
+	}
+
+	async function findChatsByPhonesAnyLine(phoneList, chatIds) {
+		const phones = (phoneList || []).map(buildWaPhoneDigits).filter(function (p) {
+			return p.length >= 10;
+		});
+		if (!phones.length) return;
+
+		// 1) CRM duplicate → чаты контакта/лида/компании (в т.ч. другие сделки)
+		for (let i = 0; i < phones.length && i < 4; i++) {
+			try {
+				const dup = await rest('crm.duplicate.findbycomm', {
+					type: 'PHONE',
+					values: buildPhoneLookupValues(phones[i])
+				});
+				const dupData = dup.result || dup || {};
+				const types = ['CONTACT', 'LEAD', 'COMPANY', 'DEAL'];
+				for (let t = 0; t < types.length; t++) {
+					const ids = dupData[types[t]] || [];
+					for (let j = 0; j < ids.length && j < 8; j++) {
+						await collectChatIdsForCrmEntity(types[t], ids[j], chatIds);
+						if (String(types[t]).toLowerCase() === 'deal' || types[t] === 'DEAL') {
+							await fetchChatIdsFromCrmActivities('deal', ids[j], chatIds);
+						}
+						if (types[t] === 'LEAD' || types[t] === 'lead') {
+							await fetchChatIdsFromCrmActivities('lead', ids[j], chatIds);
+						}
+					}
+				}
+			} catch (e) {
+				console.warn('deal deeplink duplicate', e);
+			}
+		}
+
+		// 2) USER_CODE по всем линиям из кеша
+		let metas = getAllOlMetasFromCache();
+		if (!metas.length) {
+			const one = getOlMetaFromCache();
+			if (one) metas = [one];
+		}
+		for (let m = 0; m < metas.length; m++) {
+			for (let p = 0; p < phones.length && p < 3; p++) {
+				const userCode = buildUserCodeFromOlMeta(metas[m], phones[p]);
+				if (!userCode || failedUserCodeLookups.has(userCode)) continue;
+				try {
+					const data = await rest('imopenlines.dialog.get', { USER_CODE: userCode });
+					const dialog = data.result || data;
+					const cid = parseInt(dialog.id, 10);
+					if (cid) chatIds.add(cid);
+				} catch (e) {
+					failedUserCodeLookups.add(userCode);
+				}
+			}
+		}
+
+		// 3) уже загруженный список слева — только entity_id телефон
+		(chatsCache || []).forEach(function (chat) {
+			const cps = getChatWaPhones(chat);
+			const hit = phones.some(function (ph) {
+				const tail = buildWaPhoneDigits(ph).slice(-10);
+				return tail.length >= 10 && cps.indexOf(tail) !== -1;
+			});
+			if (!hit) return;
+			const cid = parseInt(chat.chat_id || (chat.chat && chat.chat.id), 10);
+			if (cid) chatIds.add(cid);
+		});
+	}
+
+	function getChatWaPhones(item) {
+		const out = new Set();
+		const add = function (v) {
+			const d = buildWaPhoneDigits(v);
+			if (d.length >= 10) out.add(d.slice(-10));
+		};
+		const eid = String((item && item.chat && item.chat.entity_id) || (item && item.entity_id) || '');
+		if (eid) {
+			eid.split('|').forEach(function (part) {
+				part = String(part || '').trim();
+				if (!part) return;
+				const wa = part.match(/(\d{10,15})@c\.us/i);
+				if (wa) add(wa[1]);
+				add(part.replace(/@.+$/i, ''));
+			});
+		}
+		['entity_data_1', 'entity_data_2', 'entity_data_3'].forEach(function (key) {
+			const val = item && item.chat && item.chat[key];
+			if (!val) return;
+			extractPhoneDigitsFromText(val).forEach(add);
+		});
+		return Array.from(out);
+	}
+
+	function phoneTails(phones) {
+		return (phones || []).map(buildWaPhoneDigits).filter(function (p) {
+			return p.length >= 10;
+		}).map(function (p) {
+			return p.slice(-10);
+		});
+	}
+
+	function chatItemMatchesPhones(item, phones) {
+		const want = phoneTails(phones);
+		if (!want.length) return true;
+		const have = getChatWaPhones(item);
+		if (!have.length) return false;
+		return want.some(function (w) {
+			return have.indexOf(w) !== -1;
+		});
+	}
+
+	function scoreDialogForCrm(dialog, phoneDigits, fromPrimary) {
+		if (!dialog) return -1e9;
+		const hay = [
+			dialog.entity_id,
+			dialog.entity_data_1,
+			dialog.entity_data_2,
+			dialog.entity_data_3,
+			dialog.dialog_id
+		].filter(Boolean).join('|').toLowerCase();
+		if (/@g\.us\b/i.test(hay)) return -1e9;
+
+		let score = 0;
+		if (fromPrimary) score += 40;
+
+		const hayDigits = normalizePhoneDigits(hay);
+		if (phoneDigits && phoneDigits.length >= 10) {
+			const variants = [phoneDigits];
+			if (phoneDigits.length === 11 && (phoneDigits[0] === '7' || phoneDigits[0] === '8')) {
+				variants.push(phoneDigits.slice(1));
+			}
+			if (variants.some(function (v) { return v.length >= 10 && hayDigits.indexOf(v) !== -1; })) {
+				score += 120;
+			}
+		}
+
+		const lineStatus = parseInt(
+			(dialog.lines && (dialog.lines.status || dialog.lines.STATUS)) || dialog.status,
+			10
+		);
+		if (CLOSED_LINE_STATUSES.indexOf(lineStatus) === -1) score += 60;
+		else score -= 30;
+
+		if (/@c\.us|@s\.whatsapp\.net|whatsapp|green|wazzup/i.test(hay)) score += 25;
+		if (!dialog.entity_id && !dialog.entity_data_1) score -= 40;
+		return score;
+	}
+
+	function parseCrmEntityId(v) {
+		if (v == null || v === '') return 0;
+		const s = String(v).trim();
+		// Bitrix UI часто копируют как ID331574 / LEAD_331574
+		const m = s.match(/(\d{1,12})/);
+		return m ? (parseInt(m[1], 10) || 0) : 0;
+	}
+
+	async function fetchChatIdsFromCrmActivities(entityType, entityId, chatIds) {
+		const type = String(entityType || '').toLowerCase();
+		const id = parseInt(entityId, 10);
+		if (!id) return;
+		const ownerTypeId = type === 'deal' ? 2 : (type === 'lead' ? 1 : 0);
+		if (!ownerTypeId) return;
+		try {
+			const rows = await rest('crm.activity.list', {
+				filter: {
+					OWNER_TYPE_ID: ownerTypeId,
+					OWNER_ID: id
+				},
+				select: ['ID', 'PROVIDER_ID', 'PROVIDER_TYPE_ID', 'ASSOCIATED_ENTITY_ID', 'SUBJECT', 'SETTINGS'],
+				order: { ID: 'DESC' },
+				start: 0
+			});
+			const list = Array.isArray(rows) ? rows : (rows && rows.result) || [];
+			for (let i = 0; i < list.length; i++) {
+				const a = list[i];
+				const prov = String(a.PROVIDER_ID || a.provider_id || '').toUpperCase();
+				const subj = String(a.SUBJECT || a.subject || '');
+				if (prov.indexOf('IMOPENLINE') === -1 && !/чат открытой линии|whatsapp|green-api|open.?line/i.test(subj)) {
+					continue;
+				}
+				let cid = parseInt(a.ASSOCIATED_ENTITY_ID || a.associated_entity_id, 10) || 0;
+				if (!cid && a.SETTINGS) {
+					try {
+						const st = typeof a.SETTINGS === 'string' ? JSON.parse(a.SETTINGS) : a.SETTINGS;
+						cid = parseInt(st && (st.CHAT_ID || st.chatId || st.DIALOG_ID), 10) || 0;
+					} catch (e) {}
+				}
+				const fromSubj = subj.match(/chat(\d+)/i) || subj.match(/#(\d{3,})/);
+				if (!cid && fromSubj) cid = parseInt(fromSubj[1], 10) || 0;
+				if (!cid) continue;
+				try {
+					const resolved = await resolveOlRawId(cid);
+					if (resolved && parseInt(resolved.chatId, 10)) {
+						cid = parseInt(resolved.chatId, 10);
+					}
+				} catch (e) {}
+				chatIds.add(cid);
+			}
+		} catch (e) {
+			console.warn('crm.activity.list chats', e);
+		}
+	}
+
+	/**
+	 * Резолв OL-чата для сделки/лида (как виджет findPersonalChatForDeal).
+	 * entityType: 'deal' | 'lead'
+	 */
+	async function resolveChatItemForCrmEntity(entityType, entityId) {
+		const type = String(entityType || '').toLowerCase();
+		const id = parseCrmEntityId(entityId);
+		if (!id || (type !== 'deal' && type !== 'lead')) return null;
+
+		const meta = await fetchCrmPhonesForEntity(type, id);
+		const phones = meta.phones || [];
+		const phoneDigits = phones[0] || '';
+		const contactId = meta.contactId || 0;
+		const relatedDealIds = meta.dealIds || (type === 'deal' ? [id] : []);
+		const requirePhone = phones.length > 0;
+		if (requirePhone) {
+			console.info('WA CC: CRM deeplink phones', phones);
+		}
+
+		const seen = new Set();
+		const scored = [];
+
+		const pushChatId = async function (cid, fromPrimary) {
+			cid = parseInt(cid, 10);
+			if (!cid) return;
+			try {
+				const resolved = await resolveOlRawId(cid);
+				const real = parseInt(resolved && resolved.chatId, 10);
+				if (real > 0) cid = real;
+			} catch (e) {}
+			if (seen.has(cid)) return;
+			seen.add(cid);
+			try {
+				const item = await chatItemFromDialogChatId(cid);
+				if (!item) return;
+				if (requirePhone && !chatItemMatchesPhones(item, phones)) return;
+
+				const dialog = item.chat || item;
+				let bestPhoneScore = scoreDialogForCrm(dialog, phoneDigits, fromPrimary);
+				for (let pi = 1; pi < phones.length; pi++) {
+					const s = scoreDialogForCrm(dialog, phones[pi], fromPrimary);
+					if (s > bestPhoneScore) bestPhoneScore = s;
+				}
+				scored.push({ score: bestPhoneScore, item: item, fromPrimary: fromPrimary });
+			} catch (e) {
+				console.warn('crm deeplink dialog', cid, e);
+			}
+		};
+
+		const pickBest = function () {
+			if (!scored.length) return null;
+			scored.sort(function (a, b) { return b.score - a.score; });
+			if (requirePhone) {
+				const matched = scored.filter(function (s) {
+					return chatItemMatchesPhones(s.item, phones);
+				});
+				if (!matched.length) return null;
+				return matched[0].item;
+			}
+			return scored[0].item;
+		};
+
+		// 1) телефон → USER_CODE / duplicate (самый точный)
+		if (phones.length) {
+			const phoneSet = new Set();
+			await findChatsByPhonesAnyLine(phones, phoneSet);
+			const pids = Array.from(phoneSet);
+			for (let i = 0; i < pids.length; i++) {
+				await pushChatId(pids[i], false);
+			}
+			const hit = pickBest();
+			if (hit) {
+				try {
+					chatsCache = mergeChatLists(chatsCache, scored.map(function (s) { return s.item; }));
+					await enrichChatDisplayNames(scored.map(function (s) { return s.item; }));
+					renderChatList();
+				} catch (e) {}
+				return hit;
+			}
+		}
+
+		const batches = [
+			{ entityType: type, entityId: id, activeOnly: true, fromPrimary: true },
+			{ entityType: 'contact', entityId: contactId, activeOnly: true, fromPrimary: false },
+			{ entityType: type, entityId: id, activeOnly: false, fromPrimary: true },
+			{ entityType: 'contact', entityId: contactId, activeOnly: false, fromPrimary: false }
+		];
+		relatedDealIds.forEach(function (did) {
+			did = parseInt(did, 10);
+			if (!did || (type === 'deal' && did === id)) return;
+			batches.push(
+				{ entityType: 'deal', entityId: did, activeOnly: true, fromPrimary: false },
+				{ entityType: 'deal', entityId: did, activeOnly: false, fromPrimary: false }
+			);
+		});
+
+		for (let b = 0; b < batches.length; b++) {
+			const batch = batches[b];
+			if (!batch.entityId) continue;
+			const chatIds = new Set();
+			if (batch.activeOnly) {
+				try {
+					const chats = await rest('imopenlines.crm.chat.get', {
+						CRM_ENTITY_TYPE: batch.entityType,
+						CRM_ENTITY: batch.entityId,
+						ACTIVE_ONLY: 'Y'
+					});
+					const list = Array.isArray(chats) ? chats : (chats && chats.result) || [];
+					if (Array.isArray(list)) {
+						list.forEach(function (c) {
+							const cid = parseInt(c.CHAT_ID || c.chatId || c.id, 10);
+							if (cid) chatIds.add(cid);
+						});
+					}
+				} catch (e) {
+					console.warn('imopenlines.crm.chat.get', batch, e);
+				}
+			} else {
+				await collectChatIdsForCrmEntity(batch.entityType, batch.entityId, chatIds);
+			}
+
+			const ids = Array.from(chatIds);
+			for (let i = 0; i < ids.length; i++) {
+				await pushChatId(ids[i], batch.fromPrimary);
+			}
+
+			if (batch.activeOnly && batch.fromPrimary) {
+				const good = scored.filter(function (s) {
+					return s.score >= 120 || (!requirePhone && s.score >= 40);
+				});
+				if (good.length) break;
+			}
+		}
+
+		// Таймлайн «Чат с клиентом» на этой и связанных сделках
+		if (!scored.length) {
+			const actIds = new Set();
+			await fetchChatIdsFromCrmActivities(type, id, actIds);
+			if (type === 'deal') {
+				for (let i = 0; i < relatedDealIds.length && i < 10; i++) {
+					if (relatedDealIds[i] === id) continue;
+					await fetchChatIdsFromCrmActivities('deal', relatedDealIds[i], actIds);
+				}
+			}
+			const aids = Array.from(actIds);
+			for (let i = 0; i < aids.length; i++) {
+				await pushChatId(aids[i], true);
+			}
+		}
+
+		const best = pickBest();
+		if (best) {
+			try {
+				chatsCache = mergeChatLists(chatsCache, scored.map(function (s) { return s.item; }));
+				await enrichChatDisplayNames(scored.map(function (s) { return s.item; }));
+				renderChatList();
+			} catch (e) {}
+		}
+		return best;
+	}
+
+	/* Deep-link: ?chatId= / ?dialogId= / ?dealId= / ?leadId= (приоритет chat → dialog → deal/lead) */
 	(async function openFromQuery() {
-		const params = new URLSearchParams(window.location.search);
+		const params = (typeof window.waCcParams === 'function')
+			? window.waCcParams()
+			: new URLSearchParams(window.location.search);
 		const chatIdParam = params.get('chatId');
 		const dialogIdParam = params.get('dialogId');
-		if (!chatIdParam && !dialogIdParam) return;
+		const dealIdRaw = params.get('dealId') || params.get('DEAL_ID');
+		const leadIdRaw = params.get('leadId') || params.get('LEAD_ID');
+		const dealIdParam = dealIdRaw ? String(parseCrmEntityId(dealIdRaw) || '') : '';
+		const leadIdParam = leadIdRaw ? String(parseCrmEntityId(leadIdRaw) || '') : '';
+		if (!chatIdParam && !dialogIdParam && !dealIdRaw && !leadIdRaw) return;
+		if ((dealIdRaw || leadIdRaw) && !dealIdParam && !leadIdParam) {
+			console.warn('WA CC: некорректный dealId/leadId', dealIdRaw || leadIdRaw);
+			return;
+		}
+
+		const adoptTarget = async function (target, fromCrm) {
+			if (!target) return false;
+			if (fromCrm && (dealIdParam || leadIdParam)) {
+				const meta = await fetchCrmPhonesForEntity(
+					dealIdParam ? 'deal' : 'lead',
+					dealIdParam || leadIdParam
+				);
+				if (meta.phones && meta.phones.length) {
+					if (!chatItemMatchesPhones(target, meta.phones)) {
+						console.warn('WA CC: телефон не совпал — чат не открываем', {
+							want: meta.phones,
+							have: getChatWaPhones(target),
+							chatId: target.chat_id || (target.chat && target.chat.id)
+						});
+						return false;
+					}
+				}
+			}
+			chatsCache = mergeChatLists(chatsCache, [target]);
+			await enrichChatDisplayNames([target]);
+			if (fromCrm) {
+				crmFocusDialogId = resolveDialogId(target);
+				if (isWhatsAppGroupChat(target)) listFilter = 'groups';
+			}
+			renderChatList();
+			await openDialog(target);
+			return true;
+		};
 
 		const tryOpen = async function () {
 			let target = null;
+
 			if (chatIdParam) {
-				const cid = parseInt(chatIdParam, 10);
+				const cid = parseCrmEntityId(chatIdParam) || parseInt(chatIdParam, 10);
 				target = (chatsCache || []).find(function (c) {
 					const id = c.chat_id || (c.chat && c.chat.id);
 					return parseInt(id, 10) === cid;
@@ -3391,36 +4814,75 @@ BX.ready(function () {
 				if (!target && cid) {
 					try {
 						target = await chatItemFromDialogChatId(cid);
-						if (target) {
-							chatsCache = mergeChatLists(chatsCache, [target]);
-							await enrichChatDisplayNames([target]);
-							renderChatList();
-						}
 					} catch (e) {
 						console.warn('deeplink dialog.get', e);
 					}
 				}
+				if (await adoptTarget(target, !!(dealIdParam || leadIdParam))) return true;
 			}
-			if (!target && dialogIdParam) {
+
+			if (dialogIdParam) {
 				const want = String(dialogIdParam).toLowerCase();
 				target = (chatsCache || []).find(function (c) {
 					const id = resolveDialogId(c);
 					return id && String(id).toLowerCase() === want;
 				});
+				if (!target) {
+					const m = want.match(/^chat(\d+)$/i) || want.match(/(\d+)/);
+					if (m) {
+						try {
+							target = await chatItemFromDialogChatId(parseInt(m[1], 10));
+						} catch (e) {}
+					}
+				}
+				if (await adoptTarget(target, !!(dealIdParam || leadIdParam))) return true;
 			}
-			if (target) {
-				await openDialog(target);
-				return true;
+
+			if (dealIdParam || leadIdParam) {
+				try {
+					if (dealIdParam) {
+						target = await resolveChatItemForCrmEntity('deal', dealIdParam);
+					} else {
+						target = await resolveChatItemForCrmEntity('lead', leadIdParam);
+					}
+				} catch (e) {
+					console.warn('deeplink crm entity', e);
+				}
+				if (await adoptTarget(target, true)) return true;
 			}
+
 			return false;
 		};
 
-		for (let i = 0; i < 8; i++) {
+		for (let i = 0; i < 10; i++) {
 			if (await tryOpen()) return;
 			await new Promise(function (r) { setTimeout(r, 400); });
+		}
+
+		if (dealIdParam || leadIdParam) {
+			const label = dealIdParam ? ('сделке #' + dealIdParam) : ('лиду #' + leadIdParam);
+			console.warn('WA CC: чат не найден по ' + label);
+			if (typeof BX !== 'undefined' && BX.UI && BX.UI.Notification) {
+				BX.UI.Notification.Center.notify({
+					content: 'WhatsApp-чат не найден по ' + label,
+					autoHideDelay: 5000
+				});
+			}
 		}
 	})();
 });
 </script>
 
-<?php require($_SERVER["DOCUMENT_ROOT"]."/bitrix/footer.php"); ?>
+<?php
+if (!empty($waEmbed)) {
+	// добить отложенные JS из Asset (rest/core), без footer шаблона B24
+	if (is_object($APPLICATION) && method_exists($APPLICATION, 'ShowBodyScripts')) {
+		$APPLICATION->ShowBodyScripts();
+	}
+	echo '</body></html>';
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php';
+	die();
+}
+
+require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/footer.php';
+?>

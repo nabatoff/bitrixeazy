@@ -1,81 +1,43 @@
-# Что сделать с PHP КЦ (просто)
+# Deep-link КЦ + кнопка в сделке/лиде
 
-Deep-link = если открыть  
-`https://crm.artflowers.kz/local/custom_chat/?chatId=123`  
-страница **сама откроет этот чат**, а не просто список.
+## Query-параметры
 
-Виджет кнопкой «Открыть в КЦ» как раз так и ходит.
+| URL | Поведение |
+|---|---|
+| `/local/custom_chat/?chatId=123` | открыть чат по ID (как раньше) |
+| `/local/custom_chat/?dialogId=chat123` | открыть по dialogId |
+| `/local/custom_chat/?dealId=456` | найти OL-чат сделки → открыть |
+| `/local/custom_chat/?leadId=789` | найти OL-чат лида → открыть |
 
-## Правка (1 место в конце файла)
+Приоритет: `chatId` / `dialogId` → потом `dealId` / `leadId`.
 
-Найди в самом конце `<script>` / `BX.ready` эти строки:
+Обычная страница КЦ без query — без изменений.
 
-```javascript
-	updateSendButton();
-	loadChatList();
-	setInterval(loadChatList, 30000);
-});
+## Мобильное приложение Bitrix24
+
+Локальное приложение (вкладки CRM + меню): см. [APP_MOBILE.md](APP_MOBILE.md).
+
+## Кнопка в карточке сделки и лида
+
+Файлы:
+
+- `local/custom_chat/include_crm_button.php` — кнопка «WhatsApp чат» → SidePanel
+- `local/php_interface/init.php` — подключает кнопку
+
+Если на портале **уже есть** свой `local/php_interface/init.php`, не перезаписывай его — добавь одну строку:
+
+```php
+require_once $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/include_crm_button.php';
 ```
 
-**Замени их целиком на:**
+Залить на портал:
 
-```javascript
-	updateSendButton();
-	loadChatList();
-	setInterval(loadChatList, 30000);
+1. `local/custom_chat/index.php`
+2. `local/custom_chat/include_crm_button.php`
+3. `local/php_interface/init.php` (или строку require в существующий)
 
-	/* Deep-link из виджета BitrixEasy: ?chatId= / ?dialogId= */
-	(async function openFromQuery() {
-		const params = new URLSearchParams(window.location.search);
-		const chatIdParam = params.get('chatId');
-		const dialogIdParam = params.get('dialogId');
-		if (!chatIdParam && !dialogIdParam) return;
+Проверка:
 
-		const tryOpen = async function () {
-			let target = null;
-			if (chatIdParam) {
-				const cid = parseInt(chatIdParam, 10);
-				target = (chatsCache || []).find(function (c) {
-					const id = c.chat_id || (c.chat && c.chat.id);
-					return parseInt(id, 10) === cid;
-				});
-				if (!target && cid) {
-					try {
-						target = await chatItemFromDialogChatId(cid);
-						if (target) {
-							chatsCache = mergeChatLists(chatsCache, [target]);
-							await enrichChatDisplayNames([target]);
-							renderChatList();
-						}
-					} catch (e) {
-						console.warn('deeplink dialog.get', e);
-					}
-				}
-			}
-			if (!target && dialogIdParam) {
-				const want = String(dialogIdParam).toLowerCase();
-				target = (chatsCache || []).find(function (c) {
-					const id = resolveDialogId(c);
-					return id && String(id).toLowerCase() === want;
-				});
-			}
-			if (target) {
-				await openDialog(target);
-				return true;
-			}
-			return false;
-		};
-
-		for (let i = 0; i < 8; i++) {
-			if (await tryOpen()) return;
-			await new Promise(function (r) { setTimeout(r, 400); });
-		}
-	})();
-});
-```
-
-Сохрани файл на сервере (`/local/custom_chat/index.php` или как у тебя называется).
-
-Проверка: открой  
-`https://crm.artflowers.kz/local/custom_chat/?chatId=ЧИСЛО_ИЗ_СУЩЕСТВУЮЩЕГО_ЧАТА`  
-— должен сразу открыться диалог.
+- сделка с WA → кнопка «WhatsApp чат» → SidePanel с диалогом клиента
+- лид с WA → то же с `?leadId=`
+- `/local/custom_chat/` без параметров — список чатов как раньше

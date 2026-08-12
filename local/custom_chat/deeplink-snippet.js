@@ -1,62 +1,16 @@
 /**
- * Deep-link patch for https://crm.artflowers.kz/local/custom_chat/
- *
- * Insert INSIDE BX.ready(...), AFTER:
- *   updateSendButton();
- *   loadChatList();
- *   setInterval(loadChatList, 30000);
- *
- * Paste the block below (or require this file if you wire it yourself).
- *
- * Opens chat from ?chatId=123 or ?dialogId=chat123
+ * Deep-link opener for custom_chat (reference / patch helper).
+ * Opens chat from ?chatId= / ?dialogId= / ?dealId= / ?leadId=
+ * Actual logic lives in index.php openFromQuery + resolveChatItemForCrmEntity.
  */
+(async function openFromQuery() {
+	const params = new URLSearchParams(window.location.search);
+	const chatIdParam = params.get('chatId');
+	const dialogIdParam = params.get('dialogId');
+	const dealIdParam = params.get('dealId') || params.get('DEAL_ID');
+	const leadIdParam = params.get('leadId') || params.get('LEAD_ID');
+	if (!chatIdParam && !dialogIdParam && !dealIdParam && !leadIdParam) return;
 
-/*
-  (async function openFromQuery() {
-    const params = new URLSearchParams(window.location.search);
-    const chatIdParam = params.get('chatId');
-    const dialogIdParam = params.get('dialogId');
-    if (!chatIdParam && !dialogIdParam) return;
-
-    const tryOpen = async () => {
-      let target = null;
-      if (chatIdParam) {
-        const cid = parseInt(chatIdParam, 10);
-        target = (chatsCache || []).find(function (c) {
-          const id = c.chat_id || (c.chat && c.chat.id);
-          return parseInt(id, 10) === cid;
-        });
-        if (!target && cid) {
-          try {
-            target = await chatItemFromDialogChatId(cid);
-            if (target) {
-              chatsCache = mergeChatLists(chatsCache, [target]);
-              await enrichChatDisplayNames([target]);
-              renderChatList();
-            }
-          } catch (e) {
-            console.warn('deeplink dialog.get', e);
-          }
-        }
-      }
-      if (!target && dialogIdParam) {
-        const want = String(dialogIdParam).toLowerCase();
-        target = (chatsCache || []).find(function (c) {
-          const id = resolveDialogId(c);
-          return id && String(id).toLowerCase() === want;
-        });
-      }
-      if (target) {
-        await openDialog(target);
-        return true;
-      }
-      return false;
-    };
-
-    // list may still be loading
-    for (let i = 0; i < 8; i++) {
-      if (await tryOpen()) return;
-      await new Promise(function (r) { setTimeout(r, 400); });
-    }
-  })();
-*/
+	// Implemented in index.php — see resolveChatItemForCrmEntity / openFromQuery
+	console.info('WA CC deeplink', { chatIdParam, dialogIdParam, dealIdParam, leadIdParam });
+})();
