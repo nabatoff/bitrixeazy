@@ -1,7 +1,10 @@
 <?php
 /**
- * Статусы исходящих WhatsApp из Green API outgoingMessageStatus.
- * Ключ — chatId (77071234567@c.us / 1203...@g.us) и голые цифры телефона.
+ * Статусы исходящих WhatsApp из Green API outgoingMessageStatus / lastOutgoingMessages.
+ *
+ * Важно: статус per idMessage; сводка по чату = последнее сообщение по ts
+ * (можно «откатиться» с read→delivered, если ушло новое непрочитанное).
+ * readTs = max(ts) среди сообщений со status=read в этом чате.
  */
 
 function waCcTicksStorePath()
@@ -65,11 +68,17 @@ function waCcTicksReadAll()
 {
 	$path = waCcTicksStorePath();
 	if (!is_file($path)) {
-		return [];
+		return ['_messages' => []];
 	}
 	$raw = @file_get_contents($path);
 	$data = json_decode((string)$raw, true);
-	return is_array($data) ? $data : [];
+	if (!is_array($data)) {
+		return ['_messages' => []];
+	}
+	if (!isset($data['_messages']) || !is_array($data['_messages'])) {
+		$data['_messages'] = [];
+	}
+	return $data;
 }
 
 function waCcTicksSaveAll(array $data)
@@ -88,21 +97,26 @@ function waCcTicksSaveAll(array $data)
 	return true;
 }
 
-function waCcTicksApplyWebhook(array $hook)
+/**
+ * Обновить статус одного исходящего сообщения + сводку чата.
+ * Для одного idMessage ранг только растёт.
+ * Для чата: берём сообщение с большим ts (при равном ts — больший ранг).
+ */
+function waCcTicksApplyStatus($chatId, $status, $ts, $idMessage)
 {
-	if (strtolower((string)($hook['typeWebhook'] ?? '')) !== 'outgoingmessagestatus') {
-		return false;
-	}
-	$status = strtolower((string)($hook['status'] ?? ''));
+	$status = strtolower(trim((string)$status));
 	$rank = waCcTicksRank($status);
 	if ($rank < 1) {
 		return false;
 	}
-	$chatId = (string)($hook['chatId'] ?? '');
 	$keys = waCcTicksKeysFromChatId($chatId);
 	if (!$keys) {
 		return false;
 	}
+	$ts = (int)$ts ?: time();
+	$idMessage = trim((string)$idMessage);
+	$chatId = (string)$chatId;
+
 	$path = waCcTicksStorePath();
 	$fp = @fopen($path, 'c+');
 	if (!$fp) {
@@ -114,34 +128,131 @@ function waCcTicksApplyWebhook(array $hook)
 	if (!is_array($data)) {
 		$data = [];
 	}
-	$ts = (int)($hook['timestamp'] ?? time());
-	$idMessage = (string)($hook['idMessage'] ?? '');
+	if (!isset($data['_messages']) || !is_array($data['_messages'])) {
+		$data['_messages'] = [];
+	}
+
+	$changed = false;
+
+	if ($idMessage !== '') {
+		$prevMsg = is_array($data['_messages'][$idMessage] ?? null) ? $data['_messages'][$idMessage] : [];
+		$prevRank = waCcTicksRank($prevMsg['status'] ?? '');
+		if ($rank >= $prevRank) {
+			$data['_messages'][$idMessage] = [
+				'status' => $status,
+				'ts' => max($ts, (int)($prevMsg['ts'] ?? 0)),
+				'chatId' => $chatId,
+			];
+			$changed = true;
+		} else {
+			/* оставляем более «сильный» статус того же сообщения */
+			$status = strtolower((string)($prevMsg['status'] ?? $status));
+			$rank = waCcTicksRank($status);
+			$ts = max($ts, (int)($prevMsg['ts'] ?? 0));
+		}
+	}
+
 	foreach ($keys as $key) {
 		$prev = is_array($data[$key] ?? null) ? $data[$key] : [];
+		$prevTs = (int)($prev['ts'] ?? 0);
 		$prevRank = waCcTicksRank($prev['status'] ?? '');
-		if ($rank < $prevRank) {
+		$prevReadTs = (int)($prev['readTs'] ?? 0);
+		if ($status === 'read' || (!empty($prev['status']) && strtolower((string)$prev['status']) === 'read' && $prevReadTs <= 0)) {
+			/* миграция: старый sticky read без readTs */
+			if ($status === 'read') {
+				$prevReadTs = max($prevReadTs, $ts);
+			} elseif ($prevReadTs <= 0 && $prevRank >= 3) {
+				$prevReadTs = $prevTs;
+			}
+		}
+
+		$readTs = $prevReadTs;
+		if ($rank >= 3) {
+			$readTs = max($readTs, $ts);
+		}
+
+		$sameMsg = ($idMessage !== '' && $idMessage === (string)($prev['idMessage'] ?? ''));
+		$newer = ($ts > $prevTs);
+		$sameTimeBetter = ($ts === $prevTs && $rank >= $prevRank);
+		$replaceLatest = ($prevTs <= 0) || $newer || $sameTimeBetter || $sameMsg;
+
+		if (!$replaceLatest && $readTs === $prevReadTs) {
 			continue;
 		}
-		$data[$key] = [
-			'status' => $status,
-			'ts' => $ts,
-			'idMessage' => $idMessage,
-			'chatId' => $chatId,
-		];
+
+		if ($replaceLatest) {
+			$data[$key] = [
+				'status' => $status,
+				'ts' => $ts,
+				'idMessage' => $idMessage !== '' ? $idMessage : (string)($prev['idMessage'] ?? ''),
+				'chatId' => $chatId,
+				'readTs' => $readTs,
+			];
+		} else {
+			$data[$key] = [
+				'status' => (string)($prev['status'] ?? ''),
+				'ts' => $prevTs,
+				'idMessage' => (string)($prev['idMessage'] ?? ''),
+				'chatId' => (string)($prev['chatId'] ?? $chatId),
+				'readTs' => $readTs,
+			];
+		}
+		$changed = true;
 	}
-	ftruncate($fp, 0);
-	rewind($fp);
-	fwrite($fp, json_encode($data, JSON_UNESCAPED_UNICODE));
+
+	if ($changed) {
+		/* не раздувать _messages бесконечно */
+		if (count($data['_messages']) > 8000) {
+			uasort($data['_messages'], static function ($a, $b) {
+				return ((int)($b['ts'] ?? 0)) <=> ((int)($a['ts'] ?? 0));
+			});
+			$data['_messages'] = array_slice($data['_messages'], 0, 5000, true);
+		}
+		ftruncate($fp, 0);
+		rewind($fp);
+		fwrite($fp, json_encode($data, JSON_UNESCAPED_UNICODE));
+	}
 	flock($fp, LOCK_UN);
 	fclose($fp);
-	return true;
+	return $changed;
+}
+
+function waCcTicksApplyWebhook(array $hook)
+{
+	if (strtolower((string)($hook['typeWebhook'] ?? '')) !== 'outgoingmessagestatus') {
+		return false;
+	}
+	return waCcTicksApplyStatus(
+		(string)($hook['chatId'] ?? ''),
+		(string)($hook['status'] ?? ''),
+		(int)($hook['timestamp'] ?? time()),
+		(string)($hook['idMessage'] ?? '')
+	);
+}
+
+function waCcTicksNormalizeChatRow(array $row)
+{
+	$status = strtolower((string)($row['status'] ?? ''));
+	$ts = (int)($row['ts'] ?? 0);
+	$readTs = (int)($row['readTs'] ?? 0);
+	if ($readTs <= 0 && $status === 'read' && $ts > 0) {
+		$readTs = $ts;
+	}
+	return [
+		'status' => $status,
+		'ts' => $ts,
+		'idMessage' => (string)($row['idMessage'] ?? ''),
+		'chatId' => (string)($row['chatId'] ?? ''),
+		'readTs' => $readTs,
+	];
 }
 
 function waCcTicksBestForKeys(array $keys)
 {
 	$all = waCcTicksReadAll();
 	$best = null;
-	$bestRank = 0;
+	$bestTs = -1;
+	$bestRank = -1;
 	foreach ($keys as $raw) {
 		$key = waCcTicksNormalizeKey($raw);
 		if ($key === '') {
@@ -155,12 +266,14 @@ function waCcTicksBestForKeys(array $keys)
 			}
 		}
 		foreach ($candidates as $k) {
-			$row = $all[$k] ?? null;
-			if (!is_array($row)) {
+			if ($k === '_messages' || !isset($all[$k]) || !is_array($all[$k])) {
 				continue;
 			}
-			$rank = waCcTicksRank($row['status'] ?? '');
-			if ($rank > $bestRank) {
+			$row = waCcTicksNormalizeChatRow($all[$k]);
+			$ts = $row['ts'];
+			$rank = waCcTicksRank($row['status']);
+			if ($ts > $bestTs || ($ts === $bestTs && $rank > $bestRank)) {
+				$bestTs = $ts;
 				$bestRank = $rank;
 				$best = $row;
 			}
@@ -224,67 +337,18 @@ function waCcTicksNormalizeJournalRows($payload)
 	return [];
 }
 
-function waCcTicksApplyStatus($chatId, $status, $ts, $idMessage)
-{
-	$status = strtolower(trim((string)$status));
-	$rank = waCcTicksRank($status);
-	if ($rank < 1) {
-		return false;
-	}
-	$keys = waCcTicksKeysFromChatId($chatId);
-	if (!$keys) {
-		return false;
-	}
-	$path = waCcTicksStorePath();
-	$fp = @fopen($path, 'c+');
-	if (!$fp) {
-		return false;
-	}
-	flock($fp, LOCK_EX);
-	$raw = stream_get_contents($fp);
-	$data = json_decode((string)$raw, true);
-	if (!is_array($data)) {
-		$data = [];
-	}
-	$ts = (int)$ts ?: time();
-	$idMessage = (string)$idMessage;
-	$chatId = (string)$chatId;
-	$changed = false;
-	foreach ($keys as $key) {
-		$prev = is_array($data[$key] ?? null) ? $data[$key] : [];
-		$prevRank = waCcTicksRank($prev['status'] ?? '');
-		if ($rank < $prevRank) {
-			continue;
-		}
-		$data[$key] = [
-			'status' => $status,
-			'ts' => $ts,
-			'idMessage' => $idMessage,
-			'chatId' => $chatId,
-		];
-		$changed = true;
-	}
-	if ($changed) {
-		ftruncate($fp, 0);
-		rewind($fp);
-		fwrite($fp, json_encode($data, JSON_UNESCAPED_UNICODE));
-	}
-	flock($fp, LOCK_UN);
-	fclose($fp);
-	return $changed;
-}
-
 function waCcTicksPollStampPath()
 {
 	return dirname(waCcTicksStorePath()) . '/wa_ticks_poll.json';
 }
 
-function waCcTicksShouldPoll($idInstance)
+function waCcTicksShouldPoll($idInstance, $minInterval = 20)
 {
 	$idInstance = trim((string)$idInstance);
 	if ($idInstance === '') {
 		return false;
 	}
+	$minInterval = max(2, min(60, (int)$minInterval));
 	$path = waCcTicksPollStampPath();
 	$data = [];
 	if (is_file($path)) {
@@ -294,7 +358,7 @@ function waCcTicksShouldPoll($idInstance)
 		}
 	}
 	$prev = (int)($data[$idInstance] ?? 0);
-	if ($prev > 0 && (time() - $prev) < 20) {
+	if ($prev > 0 && (time() - $prev) < $minInterval) {
 		return false;
 	}
 	$data[$idInstance] = time();
@@ -302,7 +366,7 @@ function waCcTicksShouldPoll($idInstance)
 	return true;
 }
 
-function waCcTicksPollLine($lineId, $minutes = 180)
+function waCcTicksPollLine($lineId, $minutes = 180, $minInterval = 20)
 {
 	$cred = waCcTicksCredForLine($lineId);
 	if (!$cred) {
@@ -314,14 +378,14 @@ function waCcTicksPollLine($lineId, $minutes = 180)
 	if ($idInstance === '' || $apiToken === '') {
 		return false;
 	}
-	if (!waCcTicksShouldPoll($idInstance)) {
+	if (!waCcTicksShouldPoll($idInstance, $minInterval)) {
 		return false;
 	}
 	$minutes = max(15, min(1440, (int)$minutes));
 	$url = $apiUrl . '/waInstance' . rawurlencode($idInstance)
 		. '/lastOutgoingMessages/' . rawurlencode($apiToken)
 		. '?minutes=' . $minutes;
-	$payload = waCcTicksHttpGet($url, 10);
+	$payload = waCcTicksHttpGet($url, 8);
 	$rows = waCcTicksNormalizeJournalRows($payload);
 	if (!$rows) {
 		return false;
@@ -348,16 +412,12 @@ function waCcTicksPollLine($lineId, $minutes = 180)
 	return $applied > 0;
 }
 
-function waCcTicksBestForKeysWithPoll(array $keys, $lineId = 0)
+function waCcTicksBestForKeysWithPoll(array $keys, $lineId = 0, $force = false)
 {
 	$row = waCcTicksBestForKeys($keys);
-	$rank = waCcTicksRank($row['status'] ?? '');
-	$age = time() - (int)($row['ts'] ?? 0);
-	if ($rank >= 3 && $age >= 0 && $age < 25) {
-		return $row;
-	}
 	if ((int)$lineId > 0) {
-		waCcTicksPollLine((int)$lineId);
+		/* force (открытый чат / после send): poll каждые 3с; иначе 12с */
+		waCcTicksPollLine((int)$lineId, $force ? 60 : 180, $force ? 3 : 12);
 		$row = waCcTicksBestForKeys($keys);
 	}
 	return $row;

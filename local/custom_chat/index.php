@@ -323,14 +323,16 @@ if (isset($_GET['wa_ticks'])) {
 	$keys = array_values(array_filter(array_map('trim', explode(',', $rawKeys))));
 	$lineId = (int)($_GET['line'] ?? $_GET['lineId'] ?? 0);
 	$row = function_exists('waCcTicksBestForKeysWithPoll')
-		? waCcTicksBestForKeysWithPoll($keys, $lineId)
+		? waCcTicksBestForKeysWithPoll($keys, $lineId, !empty($_GET['force']) || !empty($_GET['fresh']))
 		: waCcTicksBestForKeys($keys);
+	$row = is_array($row) ? $row : [];
 	header('Content-Type: application/json; charset=utf-8');
 	header('Cache-Control: no-store');
 	echo json_encode([
 		'ok' => true,
 		'status' => $row['status'] ?? '',
 		'ts' => (int)($row['ts'] ?? 0),
+		'readTs' => (int)($row['readTs'] ?? 0),
 		'idMessage' => $row['idMessage'] ?? '',
 	], JSON_UNESCAPED_UNICODE);
 	exit;
@@ -2252,6 +2254,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let forwardSearchLoading = false;
 	let opponentReadMessageId = 0;
 	let waChatTickStatus = '';
+	let waChatTickTs = 0;
+	let waChatReadTs = 0;
 
 	const listEl = document.getElementById('wa-chat-list');
 	const tabsEl = document.getElementById('wa-tabs');
@@ -4940,12 +4944,45 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return '<svg viewBox="0 0 16 11" aria-hidden="true"><path fill="currentColor" d="M12.2 1.05 5.73 7.52 3.06 4.85 1.93 5.98l3.8 3.8 7.6-7.6z"/></svg>';
 	}
 
+	function messageUnixTs(msgOrDiv) {
+		if (!msgOrDiv) return 0;
+		if (msgOrDiv.nodeType === 1) {
+			const raw = msgOrDiv.getAttribute('data-ts');
+			const n = parseInt(raw, 10);
+			if (n > 0) return n;
+			return 0;
+		}
+		const d = parseMessageDate(msgOrDiv);
+		if (!d) return 0;
+		return Math.floor(d.getTime() / 1000);
+	}
+
+	function getLastOutgoingMsgId() {
+		if (!messagesEl) return 0;
+		const nodes = messagesEl.querySelectorAll('.wa-msg.out');
+		if (!nodes.length) return 0;
+		return parseInt(nodes[nodes.length - 1].dataset.id, 10) || 0;
+	}
+
 	function getOutgoingReadStatus(msg) {
 		if (!msg || isSystemMessage(msg) || !isOutgoingMessage(msg)) return '';
-		if (waChatTickStatus === 'read') return 'read';
+		const msgTs = messageUnixTs(msg);
 		const id = parseInt(msg.id, 10) || 0;
-		if (id && opponentReadMessageId && id <= opponentReadMessageId) return 'read';
-		if (waChatTickStatus === 'delivered' || waChatTickStatus === 'sent') return 'sent';
+		const lastOutId = getLastOutgoingMsgId();
+		const isLatest = lastOutId > 0 && id === lastOutId;
+
+		/* WhatsApp: всё до readTs — синие; после — только latest отражает свежий status */
+		if (waChatReadTs > 0 && msgTs > 0 && msgTs <= waChatReadTs) {
+			return 'read';
+		}
+		if (isLatest) {
+			if (waChatTickStatus === 'read') return 'read';
+			if (waChatTickStatus === 'delivered' || waChatTickStatus === 'sent') return 'sent';
+			if (waChatTickStatus) return 'sent';
+			return id ? 'sent' : 'pending';
+		}
+		/* старые после readTs / без read: серые двойные (доставлено), не синие sticky */
+		if (waChatTickStatus || waChatReadTs) return 'sent';
 		if (id) return 'sent';
 		return 'pending';
 	}
@@ -5009,9 +5046,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function updateOutgoingTicks() {
 		if (!messagesEl) return;
-		const read = waChatTickStatus === 'read' || opponentReadMessageId > 0;
+		const lastOutId = getLastOutgoingMsgId();
 		messagesEl.querySelectorAll('.wa-msg.out').forEach(function (div) {
 			const id = parseInt(div.dataset.id, 10) || 0;
+			const msgTs = parseInt(div.getAttribute('data-ts'), 10) || 0;
 			let el = div.querySelector('.wa-ticks');
 			const time = div.querySelector('.wa-msg-time');
 			if (!el && time) {
@@ -5021,14 +5059,24 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				time.appendChild(el);
 			}
 			if (!el) return;
-			const isRead = read && (!id || !opponentReadMessageId || id <= opponentReadMessageId || waChatTickStatus === 'read');
+
+			const isLatest = lastOutId > 0 && id === lastOutId;
+			let isRead = false;
+			if (waChatReadTs > 0 && msgTs > 0 && msgTs <= waChatReadTs) {
+				isRead = true;
+			} else if (isLatest && waChatTickStatus === 'read') {
+				isRead = true;
+			}
+
 			el.classList.toggle('read', !!isRead);
+			el.innerHTML = ticksSvgHtml(true);
 			el.title = isRead ? 'прочитано' : 'доставлено';
 			el.setAttribute('aria-label', el.title);
 		});
 	}
 
-	async function refreshReadReceipts() {
+	async function refreshReadReceipts(opts) {
+		opts = opts || {};
 		const keys = getCurrentChatTickKeys();
 		if (keys.length) {
 			try {
@@ -5038,6 +5086,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				url.searchParams.set('keys', keys.join(','));
 				const lineId = getCurrentChatLineId();
 				if (lineId) url.searchParams.set('line', lineId);
+				if (opts.force || opts.fresh) url.searchParams.set('force', '1');
 				if (window.__WA_AID && window.__WA_NOPROLOG) {
 					url.searchParams.set('wa_aid', window.__WA_AID);
 				}
@@ -5047,9 +5096,38 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				if (st === 'read' || st === 'delivered' || st === 'sent') {
 					waChatTickStatus = st;
 				}
+				waChatTickTs = parseInt((data && data.ts) || 0, 10) || 0;
+				waChatReadTs = parseInt((data && data.readTs) || 0, 10) || 0;
+				if (waChatReadTs <= 0 && st === 'read' && waChatTickTs > 0) {
+					waChatReadTs = waChatTickTs;
+				}
 			} catch (e) {}
 		}
 		updateOutgoingTicks();
+	}
+
+	function markLocalOutgoingPending() {
+		/* новое исходящее ещё не прочитано — не держим sticky read на последнем bubble */
+		waChatTickStatus = 'sent';
+		waChatTickTs = Math.floor(Date.now() / 1000);
+		updateOutgoingTicks();
+		startTicksBurst();
+	}
+
+	let ticksBurstTimer = null;
+	let ticksBurstUntil = 0;
+	function startTicksBurst() {
+		ticksBurstUntil = Date.now() + 25000;
+		if (ticksBurstTimer) return;
+		ticksBurstTimer = setInterval(function () {
+			if (!currentDialogId || Date.now() > ticksBurstUntil) {
+				clearInterval(ticksBurstTimer);
+				ticksBurstTimer = null;
+				return;
+			}
+			refreshReadReceipts({ force: true }).catch(function () {});
+		}, 1500);
+		refreshReadReceipts({ force: true }).catch(function () {});
 	}
 
 	function handlePullRead(params) {
@@ -5075,6 +5153,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const out = !system && isOutgoingMessage(msg);
 		div.className = 'wa-msg ' + (system ? 'system' : (out ? 'out' : 'in'));
 		div.dataset.id = msg.id;
+		const msgDate = parseMessageDate(msg);
+		if (msgDate) {
+			div.setAttribute('data-ts', String(Math.floor(msgDate.getTime() / 1000)));
+		}
 
 		let body = '';
 		const replyId = getReplyId(msg);
@@ -5092,7 +5174,6 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		body += renderFilesHtml(msg);
 		if (rawText.trim()) body += '<span class="wa-msg-text">' + parseBbCode(rawText) + '</span>';
 		if (!body) body = '<span class="wa-msg-text" style="color:#667781;font-style:italic">[медиа]</span>';
-		const msgDate = parseMessageDate(msg);
 		if (msgDate) {
 			body += '<span class="wa-msg-time">' + formatTime(msgDate) + messageTicksHtml(msg) + '</span>';
 		}
@@ -5443,6 +5524,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		currentChatData = chatData;
 		opponentReadMessageId = 0;
 		waChatTickStatus = '';
+		waChatTickTs = 0;
+		waChatReadTs = 0;
 		await applyCrmBindings(chatData, null);
 
 		const av = getAvatarData(chatData);
@@ -5460,8 +5543,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		renderChatList();
 		await loadMessages(dialogId);
 		await refreshSessionState();
-		refreshReadReceipts().catch(function () {});
+		refreshReadReceipts({ force: true }).catch(function () {});
 		startChatPolling();
+		startTicksBurst();
 	};
 
 	function closeMobileChatView() {
@@ -6196,8 +6280,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			clearReplyTo();
 			inputEl.style.height = 'auto';
 			updateSendButton();
+			markLocalOutgoingPending();
 			await refreshTail();
 			loadChatList();
+			refreshReadReceipts().catch(function () {});
 		} catch (e) {
 			console.error(e);
 			alert('Ошибка отправки: ' + (e.ex ? e.ex.error_description : e));
@@ -6311,8 +6397,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			});
 			uploadHint.textContent = 'Отправка голосового (' + waFile.name + ')...';
 			await uploadVoiceToClient(waFile);
+			markLocalOutgoingPending();
 			await loadMessages(currentDialogId);
 			loadChatList();
+			refreshReadReceipts().catch(function () {});
 		} catch (e) {
 			console.error(e);
 			alert('Ошибка отправки голосового: ' + (e.ex ? e.ex.error_description : (e.error_description || e.message || e)));
@@ -6342,8 +6430,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			inputEl.value = '';
 			inputEl.style.height = 'auto';
 			updateSendButton();
+			markLocalOutgoingPending();
 			await loadMessages(currentDialogId);
 			loadChatList();
+			refreshReadReceipts().catch(function () {});
 		} catch (e) {
 			console.error(e);
 			alert('Ошибка загрузки файла: ' + (e.ex ? e.ex.error_description : (e.error_description || e.message || e)));
@@ -6704,17 +6794,21 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	let chatPollTimer = null;
-	let readPollTick = 0;
+	let ticksPollTimer = null;
 	function startChatPolling() {
 		if (chatPollTimer) clearInterval(chatPollTimer);
-		readPollTick = 0;
+		if (ticksPollTimer) clearInterval(ticksPollTimer);
 		chatPollTimer = setInterval(function () {
 			if (currentDialogId && !sending && !recording) {
 				refreshTail().catch(function () {});
-				readPollTick++;
-				if (readPollTick % 2 === 0) refreshReadReceipts().catch(function () {});
 			}
 		}, 4000);
+		/* галочки отдельно и чаще — иначе отстаём от WhatsApp */
+		ticksPollTimer = setInterval(function () {
+			if (currentDialogId && !sending && !recording) {
+				refreshReadReceipts({ force: true }).catch(function () {});
+			}
+		}, 2500);
 	}
 
 	updateSendButton();
