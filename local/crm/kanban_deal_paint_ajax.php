@@ -66,6 +66,7 @@ if (count($ids) > 80) {
 }
 
 $ufPrepay = 'UF_CRM_1764332847245';
+$ufApproveNoPrepay = 'UF_CRM_1764577192130';
 $ufBought = 'UF_CRM_1783486791226';
 $ufPaid = 'UF_CRM_1764577842986';
 $ufIssued = 'UF_CRM_1784524115744';
@@ -75,6 +76,7 @@ $select = [
 	'STAGE_ID',
 	'CATEGORY_ID',
 	$ufPrepay,
+	$ufApproveNoPrepay,
 	$ufBought,
 	$ufPaid,
 	$ufIssued,
@@ -99,6 +101,7 @@ while ($row = $res->Fetch()) {
 		'STAGE_ID' => (string)($row['STAGE_ID'] ?? ''),
 		'CATEGORY_ID' => (int)($row['CATEGORY_ID'] ?? 0),
 		$ufPrepay => $row[$ufPrepay] ?? null,
+		$ufApproveNoPrepay => $row[$ufApproveNoPrepay] ?? null,
 		$ufBought => $row[$ufBought] ?? null,
 		$ufPaid => $row[$ufPaid] ?? null,
 		$ufIssued => $row[$ufIssued] ?? null,

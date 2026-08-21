@@ -19,4 +19,19 @@
  *   if (is_file($waKanbanPaint)) {
  *       require_once $waKanbanPaint;
  *   }
+ *
+ *   $waDealUfLock = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_deal_uf_lock.php';
+ *   if (is_file($waDealUfLock)) {
+ *       require_once $waDealUfLock;
+ *   }
+ *
+ *   $waDealAutoTake = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_deal_auto_take.php';
+ *   if (is_file($waDealAutoTake)) {
+ *       require_once $waDealAutoTake;
+ *   }
+ *
+ *   $waDealUfHist = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_deal_uf_history.php';
+ *   if (is_file($waDealUfHist)) {
+ *       require_once $waDealUfHist;
+ *   }
  */

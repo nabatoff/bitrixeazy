@@ -1,0 +1,13 @@
+No syntax errors detected in /home/bitrix/www/local/crm/include_deal_uf_history.php
+fields=6
+UF_CRM_1784636341021 => Счет выставлен type=enumeration
+UF_CRM_1764332847245 => Предоплата получена type=boolean
+UF_CRM_1764577842986 => Полная оплата за поставку получена type=boolean
+UF_CRM_1784802244742 => Запрос на выдачу товара без полной оплаты type=enumeration
+UF_CRM_1783486791226 => Закуплено полностью или с изменениями? type=enumeration
+UF_CRM_1784524115744 => Заказ выдан type=enumeration
+cap_empty=—
+cap_yes=Да
+cap_enum=Да
+cap_req=Запросить
+INIT_OK

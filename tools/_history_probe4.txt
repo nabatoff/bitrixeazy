@@ -1,0 +1,88 @@
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory/TrackedObject/Item.php:23:	public function setTrackedFieldNames(array $trackedFieldNames): TrackedObject
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory/TrackedObject.php:102:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory/TrackedObject.php:195:		foreach ($this->getTrackedFieldNames() as $trackedFieldName)
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:40:			static::EVENT_TYPE_USER => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_USER'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:41:			static::EVENT_TYPE_UPDATE => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_UPDATE'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:42:			static::EVENT_TYPE_EMAIL => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_EMAIL'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:43:			static::EVENT_TYPE_VIEW => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_VIEW'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:44:			static::EVENT_TYPE_EXPORT => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_EXPORT'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:45:			static::EVENT_TYPE_DELETE => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_DELETE'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:46:			static::EVENT_TYPE_LINK => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_LINK'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/EventHistory.php:47:			static::EVENT_TYPE_UNLINK => (string)Loc::getMessage('CRM_EVENT_HISTORY_EVENT_NAME_UNLINK'),
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Deal.php:584:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Dynamic.php:522:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Lead.php:428:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Quote.php:429:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Company.php:353:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Contact.php:425:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Order.php:123:	protected function getTrackedFieldNames(): array
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory.php:1573:		foreach ($this->getTrackedFieldNames() as $trackedFieldName)
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory.php:1588:		$trackedObject->setTrackedFieldNames($trackedFieldNames);
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory.php:1598:	abstract protected function getTrackedFieldNames(): array;
+====
+277:			EditorAdapter::FIELD_OPPORTUNITY => Loc::getMessage('CRM_TYPE_ITEM_FIELD_NAME_OPPORTUNITY_WITH_CURRENCY'),
+323:		if ($commonFieldName === Item::FIELD_NAME_IS_MANUAL_OPPORTUNITY)
+326:				Loc::getMessage('CRM_COMMON_IS_MANUAL_OPPORTUNITY_TRUE')
+328:				Loc::getMessage('CRM_COMMON_IS_MANUAL_OPPORTUNITY_FALSE');
+637:		if (!$this->getFieldsCollection()->hasField(Item::FIELD_NAME_OPPORTUNITY_ACCOUNT))
+653:			->addSelect(new \Bitrix\Main\ORM\Fields\ExpressionField('SUM', 'SUM(OPPORTUNITY)'))
+1588:		$trackedObject->setTrackedFieldNames($trackedFieldNames);
+2064:						$this->getFieldCaption(EditorAdapter::FIELD_OPPORTUNITY),
+2065:						EditorAdapter::FIELD_OPPORTUNITY,
+2085:			$map[EditorAdapter::FIELD_OPPORTUNITY] = [
+2086:				Item::FIELD_NAME_OPPORTUNITY,
+==== DEAL FACTORY ====
+16:use Bitrix\Crm\Service\EventHistory\TrackedObject;
+584:	protected function getTrackedFieldNames(): array
+605:	protected function getDependantTrackedObjects(): array
+609:		$productTrackedObject = new TrackedObject\Product();
+610:		$productTrackedObject->makeThisObjectDependant(Item::FIELD_NAME_PRODUCTS);
+611:		$objects[] = $productTrackedObject;
+==== CCrmEvent ====
+41:		$db_events = GetModuleEvents('crm', 'OnBeforeCrmAddEvent');
+57:					'ENTITY_FIELD' => isset($arFields['ENTITY_FIELD']) ? $arFields['ENTITY_FIELD'] : '',
+144:		$db_events = GetModuleEvents('crm', 'OnAfterCrmAddEvent');
+203:				'ENTITY_FIELD'  => isset($arRel['ENTITY_FIELD']) ? $arRel['ENTITY_FIELD'] : '',
+243:			'ID' => ['FIELD' => 'CER.ID', 'TYPE' => 'int'],
+245:			'ENTITY_TYPE' => ['FIELD' => 'CER.ENTITY_TYPE', 'TYPE' => 'string'],
+246:			'ENTITY_ID' => ['FIELD' => 'CER.ENTITY_ID', 'TYPE' => 'int'],
+247:			'ENTITY_FIELD' => ['FIELD' => 'CER.ENTITY_FIELD', 'TYPE' => 'string'],
+249:			'EVENT_REL_ID' => ['FIELD' => 'CER.EVENT_ID', 'TYPE' => 'string'],
+250:			'EVENT_ID' => ['FIELD' => 'CE.EVENT_ID', 'TYPE' => 'string', 'FROM' => $relationJoin],
+251:			'EVENT_TYPE' => ['FIELD' => 'CE.EVENT_TYPE', 'TYPE' => 'string', 'FROM' => $relationJoin],
+252:			'EVENT_NAME' => ['FIELD' => 'CE.EVENT_NAME', 'TYPE' => 'string', 'FROM' => $relationJoin],
+253:			'EVENT_TEXT_1' => ['FIELD' => 'CE.EVENT_TEXT_1', 'TYPE' => 'string', 'FROM' => $relationJoin],
+254:			'EVENT_TEXT_2' => ['FIELD' => 'CE.EVENT_TEXT_2', 'TYPE' => 'string', 'FROM' => $relationJoin],
+255:			'FILES' => ['FIELD' => 'CE.FILES', 'TYPE' => 'string', 'FROM' => $relationJoin],
+257:			'CREATED_BY_ID' => ['FIELD' => 'CE.CREATED_BY_ID', 'TYPE' => 'int', 'FROM' => $relationJoin],
+258:			'CREATED_BY_LOGIN' => ['FIELD' => 'U.LOGIN', 'TYPE' => 'string', 'FROM' => $createdByJoin],
+259:			'CREATED_BY_NAME' => ['FIELD' => 'U.NAME', 'TYPE' => 'string', 'FROM' => $createdByJoin],
+260:			'CREATED_BY_LAST_NAME' => ['FIELD' => 'U.LAST_NAME', 'TYPE' => 'string', 'FROM' => $createdByJoin],
+261:			'CREATED_BY_SECOND_NAME' => ['FIELD' => 'U.SECOND_NAME', 'TYPE' => 'string', 'FROM' => $createdByJoin],
+262:			'CREATED_BY_PERSONAL_PHOTO' => ['FIELD' => 'U.PERSONAL_PHOTO', 'TYPE' => 'int', 'FROM' => $createdByJoin],
+264:			'DATE_CREATE' => ['FIELD' => 'CE.DATE_CREATE', 'TYPE' => 'datetime', 'FROM' => $relationJoin],
+265:			'ASSIGNED_BY_ID' => ['FIELD' => 'CER.ASSIGNED_BY_ID', 'TYPE' => 'int'],
+553:	static public function RegisterViewEvent($entityTypeID, $entityID, $userID = 0)
+598:					'ref.ENTITY_FIELD' => new \Bitrix\Main\DB\SqlExpression('?s', ''),
+625:	static public function RegisterExportEvent($entityTypeID, $entityID, $userID = 0)
+655:	static public function RegisterDeleteEvent($entityTypeID, $entityID, $userID = 0, array $options = null)
+==== sample opportunity events ====
+9139521	270375	Значение поля "Сумма" было изменено	83&nbsp;600 тенге => 76&nbsp;708 тенге
+9139457	270375	Значение поля "Сумма" было изменено	800&nbsp;000 тенге => 407&nbsp;050 тенге
+9139248	298296	Значение поля "Сумма" было изменено	73&nbsp;850 тенге => 68&nbsp;750 тенге
+9139247	298296	Значение поля "Сумма" было изменено	68&nbsp;750 тенге => 73&nbsp;850 тенге
+9139245	297782	Значение поля "Сумма" было изменено	73&nbsp;850 тенге => 68&nbsp;750 тенге
+9139243	297782	Значение поля "Сумма" было изменено	68&nbsp;750 тенге => 73&nbsp;850 тенге
+9139146	273106	Значение поля "Сумма" было изменено	540&nbsp;000 тенге => 530&nbsp;880 тенге
+9139145	298296	Значение поля "Режим расчёта суммы" было изменено	На основе стоимости товаров => Вручную
+---UF-like---
+9139145	298296	Значение поля "Режим расчёта суммы" было изменено
+9139131	298296	Значение поля "Режим расчёта суммы" было изменено
+9138213	267543	Значение поля "Режим расчёта суммы" было изменено
+9138198	267543	Значение поля "Режим расчёта суммы" было изменено
+9137844	273106	Значение поля "Режим расчёта суммы" было изменено
+9136802	267543	Значение поля "Режим расчёта суммы" было изменено
+9136736	267543	Значение поля "Режим расчёта суммы" было изменено
+9136723	297782	Значение поля "Режим расчёта суммы" было изменено
+9136524	267543	Значение поля "Режим расчёта суммы" было изменено
+9135319	267543	Значение поля "Режим расчёта суммы" было изменено

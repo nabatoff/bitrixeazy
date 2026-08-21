@@ -1,0 +1,180 @@
+<?php
+
+IncludeModuleLangFile(__FILE__);
+
+use Bitrix\Crm;
+use Bitrix\Crm\Security\EntityAuthorization;
+use Bitrix\Crm\Security\QueryBuilder\OptionsBuilder;
+use Bitrix\Crm\Service\Container;
+use Bitrix\Crm\Service\EventHistory;
+use Bitrix\Crm\Settings\HistorySettings;
+use Bitrix\Main\Entity\ReferenceField;
+use Bitrix\Main\ORM\Query\Join;
+use Bitrix\Main\Text\Emoji;
+
+class CCrmEvent
+{
+	protected $cdb = null;
+	protected $currentUserID = 0;
+
+	public const TYPE_USER = EventHistory::EVENT_TYPE_USER;
+	public const TYPE_CHANGE = EventHistory::EVENT_TYPE_UPDATE;
+	public const TYPE_EMAIL = EventHistory::EVENT_TYPE_EMAIL;
+	public const TYPE_VIEW = EventHistory::EVENT_TYPE_VIEW;
+	public const TYPE_EXPORT = EventHistory::EVENT_TYPE_EXPORT;
+	public const TYPE_DELETE = EventHistory::EVENT_TYPE_DELETE;
+	public const TYPE_MERGER = EventHistory::EVENT_TYPE_MERGER;
+	public const TYPE_LINK = EventHistory::EVENT_TYPE_LINK;
+	public const TYPE_UNLINK = EventHistory::EVENT_TYPE_UNLINK;
+
+	function __construct()
+	{
+		global $DB;
+		$this->cdb = $DB;
+
+		global $USER;
+		$currentUser = (is_object($USER) && ((get_class($USER) === 'CUser') || ($USER instanceof CUser))) ? $USER : (new CUser());
+		$this->currentUserID = $currentUser->GetId();
+	}
+	public function Add($arFields, $bPermCheck = true)
+	{
+		$db_events = GetModuleEvents('crm', 'OnBeforeCrmAddEvent');
+		while($arEvent = $db_events->Fetch())
+			$arFields = ExecuteModuleEventEx($arEvent, array($arFields));
+
+		if (isset($arFields['ENTITY']) && is_array($arFields['ENTITY']))
+		{
+			foreach($arFields['ENTITY'] as $key => $arEntity)
+				if (!(isset($arEntity['ENTITY_TYPE']) && isset($arEntity['ENTITY_ID'])))
+					unset($arEntity['ENTITY'][$key]);
+		}
+		else if (isset($arFields['ENTITY_TYPE']) && isset($arFields['ENTITY_ID']))
+		{
+			$arFields['ENTITY'] = array(
+				array(
+					'ENTITY_TYPE' => $arFields['ENTITY_TYPE'],
+					'ENTITY_ID' => $arFields['ENTITY_ID'],
+					'ENTITY_FIELD' => isset($arFields['ENTITY_FIELD']) ? $arFields['ENTITY_FIELD'] : '',
+					'USER_ID' => (int)(isset($arFields['USER_ID']) ? intval($arFields['USER_ID']) : $this->currentUserID)
+				)
+			);
+		}
+		else
+			return false;
+
+		if (isset($arFields['EVENT_ID']))
+		{
+			$CCrmStatus = new CCrmStatus('EVENT_TYPE');
+			$ar = $CCrmStatus->GetStatusByStatusId($arFields['EVENT_ID']);
+			$arFields['EVENT_NAME'] = isset($ar['NAME'])? $ar['NAME']: '';
+		}
+
+		if (!$this->CheckFields($arFields))
+			return false;
+
+		if (!isset($arFields['EVENT_TYPE']))
+			$arFields['EVENT_TYPE'] = 0;
+
+		$arFiles = Array();
+		if (isset($arFields['FILES']) && !empty($arFields['FILES']))
+		{
+			$arFields['~FILES'] = Array();
+			if (isset($arFields['FILES'][0]))
+				$arFields['~FILES'] = $arFields['FILES'];
+			else
+			{
+				foreach($arFields['FILES'] as $type => $ar)
+					foreach($ar as $key => $value)
+						$arFields['~FILES'][$key][$type] = $value;
+			}
+
+			foreach($arFields['~FILES'] as &$arFile)
+			{
+				$arFile['del'] = 'N';
+				$arFile['MODULE_ID'] = 'crm';
+				$fid = intval(CFile::SaveFile($arFile, 'crm'));
+
+				if ($fid > 0)
+				{
+					$arFiles[] = $fid;
+				}
+			}
+			unset($arFile);
+		}
+
+		$userId = (int)($arFields['USER_ID'] ?? 0);
+		$arFields_i = [
+			'ASSIGNED_BY_ID'=> $userId > 0 ? $userId : $this->currentUserID,
+			'CREATED_BY_ID' => $userId > 0 ? $userId : $this->currentUserID,
+			'EVENT_ID' => $arFields['EVENT_ID'] ?? '',
+			'EVENT_NAME' => $arFields['EVENT_NAME'],
+			'EVENT_TYPE' => (int)$arFields['EVENT_TYPE'],
+			'EVENT_TEXT_1' => Emoji::encode($arFields['EVENT_TEXT_1'] ?? ''),
+			'EVENT_TEXT_2' => Emoji::encode($arFields['EVENT_TEXT_2'] ?? ''),
+			'FILES' => null,
+		];
+
+		if (count($arFiles) > 0)
+		{
+			$arFields_i['FILES'] = serialize($arFiles);
+		}
+
+		//Validate DATE_CREATE
+		if (isset($arFields['DATE_CREATE']))
+		{
+			$sqlTime = CDatabase::FormatDate($arFields['DATE_CREATE'], CLang::GetDateFormat('FULL', false), 'YYYY-MM-DD HH:MI:SS');
+			if (!(is_string($sqlTime) && $sqlTime !== ''))
+			{
+				unset($arFields['DATE_CREATE']);
+			}
+		}
+
+		if (isset($arFields['DATE_CREATE']))
+		{
+			$arFields_i['DATE_CREATE'] = $arFields['DATE_CREATE'];
+		}
+		else
+		{
+			$arFields_i['~DATE_CREATE'] = $this->cdb->GetNowFunction();
+		}
+
+		$EVENT_ID = $this->cdb->Add('b_crm_event', $arFields_i, array("FILES"), 'FILE: '.__FILE__.'<br /> LINE: '.__LINE__);
+		$this->AddRelation($EVENT_ID, $arFields['ENTITY'], $bPermCheck);
+
+		$db_events = GetModuleEvents('crm', 'OnAfterCrmAddEvent');
+		while($arEvent = $db_events->Fetch())
+			ExecuteModuleEventEx($arEvent, array($EVENT_ID, $arFields));
+
+		return $EVENT_ID;
+	}
+	public function Share($srcEntity, $dstEntities, $typeName)
+	{
+		$typeName = mb_strtoupper(strval($typeName));
+		if($typeName === '')
+		{
+			return;
+		}
+
+		global $DB;
+		$srcEntityType = isset($srcEntity['ENTITY_TYPE']) ? $DB->ForSql($srcEntity['ENTITY_TYPE']) : '';
+		$srcEntityID = isset($srcEntity['ENTITY_ID']) ? intval($srcEntity['ENTITY_ID']) : 0;
+
+		if($srcEntityType === '' || $srcEntityID <= 0)
+		{
+			return;
+		}
+
+		$dbResult = null;
+		if($typeName === 'MESSAGE')
+		{
+			$dbResult = $DB->Query("SELECT ID FROM b_crm_event WHERE ID IN (SELECT EVENT_ID FROM b_crm_event_relations WHERE ENTITY_TYPE = '{$srcEntityType}' AND ENTITY_ID = {$srcEntityID}) AND (EVENT_TYPE = 2 OR (EVENT_TYPE = 0 AND EVENT_ID = 'MESSAGE'))");
+		}
+
+		if($dbResult)
+		{
+			while($arResult = $dbResult->Fetch())
+			{
+				self::AddRelation($arResult['ID'], $dstEntities, false);
+			}
+		}
+	}

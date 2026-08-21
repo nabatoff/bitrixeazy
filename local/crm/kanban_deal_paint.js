@@ -8,15 +8,19 @@
 	var CFG = {
 		categories: { 15: 1, 16: 1, 17: 1, 18: 1, 19: 1, 20: 1 },
 		ufPrepay: 'UF_CRM_1764332847245',
+		ufApproveNoPrepay: 'UF_CRM_1764577192130',
 		ufBought: 'UF_CRM_1783486791226',
 		ufPaid: 'UF_CRM_1764577842986',
 		ufIssued: 'UF_CRM_1784524115744',
+		approveNoPrepayOk: { 869: 1 },
 		boughtOk: { 910: 1, 911: 1 },
 		issuedOk: { 912: 1, 913: 1 },
 		colorGreen: '#bff5bf',
 		colorBlue: '#bfedff',
+		colorYellow: '#f5f5a6',
 		classGreen: 'wa-kanban-paint-green',
 		classBlue: 'wa-kanban-paint-blue',
+		classYellow: 'wa-kanban-paint-yellow',
 		ajaxUrl: '/local/crm/kanban_deal_paint_ajax.php',
 		batchSize: 50
 	};
@@ -71,7 +75,10 @@
 		fields = fields || {};
 
 		if (suf === 'PREPARATION') {
-			return isTruthyBool(fields[CFG.ufPrepay]) ? 'green' : '';
+			if (isTruthyBool(fields[CFG.ufPrepay])) return 'green';
+			var approve = enumId(fields[CFG.ufApproveNoPrepay]);
+			if (CFG.approveNoPrepayOk[approve]) return 'yellow';
+			return '';
 		}
 		if (suf === 'PREPAYMENT_INVOIC') {
 			var bought = enumId(fields[CFG.ufBought]);
@@ -99,7 +106,7 @@
 
 	function stripPaintEl(el) {
 		if (!el) return;
-		el.classList.remove(CFG.classGreen, CFG.classBlue);
+		el.classList.remove(CFG.classGreen, CFG.classBlue, CFG.classYellow);
 		if (el.style) {
 			try {
 				el.style.removeProperty('background-color');
@@ -120,8 +127,18 @@
 	function applyPaint(shell, color) {
 		clearPaint(shell);
 		if (!color) return;
-		var cls = color === 'blue' ? CFG.classBlue : (color === 'green' ? CFG.classGreen : '');
-		var hex = color === 'blue' ? CFG.colorBlue : (color === 'green' ? CFG.colorGreen : '');
+		var cls = '';
+		var hex = '';
+		if (color === 'blue') {
+			cls = CFG.classBlue;
+			hex = CFG.colorBlue;
+		} else if (color === 'green') {
+			cls = CFG.classGreen;
+			hex = CFG.colorGreen;
+		} else if (color === 'yellow') {
+			cls = CFG.classYellow;
+			hex = CFG.colorYellow;
+		}
 		if (!cls) return;
 		paintTargets(shell).forEach(function (el) {
 			el.classList.add(cls);
@@ -268,6 +285,7 @@
 					CATEGORY_ID: parseInt(row.CATEGORY_ID, 10) || 0,
 					fields: {
 						UF_CRM_1764332847245: row[CFG.ufPrepay],
+						UF_CRM_1764577192130: row[CFG.ufApproveNoPrepay],
 						UF_CRM_1783486791226: row[CFG.ufBought],
 						UF_CRM_1764577842986: row[CFG.ufPaid],
 						UF_CRM_1784524115744: row[CFG.ufIssued]

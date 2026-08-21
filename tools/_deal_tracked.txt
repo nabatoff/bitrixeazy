@@ -1,0 +1,61 @@
+
+		return $result;
+	}
+
+	protected function getTrackedFieldNames(): array
+	{
+		return [
+			Item::FIELD_NAME_TITLE,
+			Item::FIELD_NAME_ASSIGNED,
+			Item::FIELD_NAME_CURRENCY_ID,
+			Item::FIELD_NAME_CATEGORY_ID,
+			Item::FIELD_NAME_STAGE_ID,
+			Item::FIELD_NAME_OPPORTUNITY,
+			Item::FIELD_NAME_IS_MANUAL_OPPORTUNITY,
+			Item::FIELD_NAME_TYPE_ID,
+			Item::FIELD_NAME_COMMENTS,
+			Item::FIELD_NAME_SOURCE_ID,
+			Item\Deal::FIELD_NAME_PROBABILITY,
+			Item::FIELD_NAME_BEGIN_DATE,
+			Item::FIELD_NAME_CLOSE_DATE,
+			Item::FIELD_NAME_CLOSED,
+			Item::FIELD_NAME_LOCATION_ID,
+		];
+	}
+
+	protected function getDependantTrackedObjects(): array
+	{
+		$objects = [];
+
+		$productTrackedObject = new TrackedObject\Product();
+		$productTrackedObject->makeThisObjectDependant(Item::FIELD_NAME_PRODUCTS);
+		$objects[] = $productTrackedObject;
+
+		return $objects;
+	}
+
+	protected function getStatisticsFacade(): ?Statistics\OperationFacade
+	{
+		return new Statistics\OperationFacade\Deal($this);
+	}
+
+	protected function configureAddOperation(Operation $operation): void
+	{
+		$operation
+			->addAction(
+				Operation::ACTION_BEFORE_SAVE,
+				new Operation\Action\Compatible\SendEvent\WithCancel\Update(
+					'OnBeforeCrmDealAdd',
+					'CRM_DEAL_CREATION_CANCELED',
+				),
+			)
+			->addAction(
+				Operation::ACTION_BEFORE_SAVE,
+				new Operation\Action\Compatible\SendEvent\ProductRowsSave('OnBeforeCrmDealProductRowsSave'),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\ClearCache('b_crm_deal'),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
