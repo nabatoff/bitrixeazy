@@ -7,6 +7,10 @@ build/
 !.env.example
 bitrix_schema.json
 *.log
+local/custom_chat/app/green_api_instances.local.php
+local/custom_chat/bin/ffmpeg
+local/custom_chat/bin/ffprobe
+
 .DS_Store
 Thumbs.db
 .vite/

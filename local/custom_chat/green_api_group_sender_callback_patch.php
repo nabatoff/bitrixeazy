@@ -6,9 +6,13 @@
  *
  *   $data = json_decode($raw, true);
  *   gaPrefixGroupSenderInWebhook($data);
+ *   gaApplyGroupChatNameFromWebhook($data);
+ *   gaApplyOutgoingMessageStatus($data);
  *
  * Дальше их обычная логика без изменений.
- * Только incoming + чат @g.us. Исходящие с трубки не трогаем.
+ *
+ * В кабинете Green API должны быть включены:
+ * outgoingWebhook + outgoingMessageWebhook + outgoingAPIMessageWebhook
  */
 
 function gaPrefixGroupSenderInWebhook(array &$hook): void
@@ -88,4 +92,27 @@ function gaPrefixField(&$value, string $prefix): void
 		return;
 	}
 	$value = $text === '' ? $prefix : ($prefix . "\n" . $text);
+}
+
+function gaApplyGroupChatNameFromWebhook(array $hook): void
+{
+	$file = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/wa_group_titles.php';
+	if (!is_file($file)) {
+		return;
+	}
+	require_once $file;
+	waCcGroupTitlesApplyWebhook($hook);
+}
+
+function gaApplyOutgoingMessageStatus(array $hook): void
+{
+	if (strtolower((string)($hook['typeWebhook'] ?? '')) !== 'outgoingmessagestatus') {
+		return;
+	}
+	$file = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/app/wa_ticks.php';
+	if (!is_file($file)) {
+		return;
+	}
+	require_once $file;
+	waCcTicksApplyWebhook($hook);
 }

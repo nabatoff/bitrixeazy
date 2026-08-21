@@ -41,6 +41,302 @@ if (!empty($_GET['wa_ffmpeg'])) {
 }
 
 /**
+ * WhatsApp PTT часто лежит как ogg/opus, а в b_file CONTENT_TYPE = image/* или octet-stream.
+ */
+function waCcMediaKindFromNameMime($mime, $fileName)
+{
+	$mime = strtolower((string)$mime);
+	$name = strtolower((string)$fileName);
+	$ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+	if (preg_match('/^(mp3|ogg|oga|opus|wav|m4a|aac)$/', $ext) || strpos($mime, 'audio/') === 0 || preg_match('/voice|ptt|audio_message|голос/', $name)) {
+		if (strpos($mime, 'audio/') !== 0) {
+			$map = ['mp3' => 'audio/mpeg', 'ogg' => 'audio/ogg', 'oga' => 'audio/ogg', 'opus' => 'audio/ogg', 'wav' => 'audio/wav', 'm4a' => 'audio/mp4', 'aac' => 'audio/aac'];
+			$mime = $map[$ext] ?? 'audio/ogg';
+		}
+		return ['kind' => 'audio', 'mime' => $mime];
+	}
+	if (preg_match('/^(mp4|mov|avi|mkv)$/', $ext) || strpos($mime, 'video/') === 0) {
+		return ['kind' => 'video', 'mime' => $mime ?: 'video/mp4'];
+	}
+	if (preg_match('/^(jpe?g|png|gif|webp|bmp|heic|heif)$/', $ext) || strpos($mime, 'image/') === 0) {
+		return ['kind' => 'image', 'mime' => $mime ?: 'image/jpeg'];
+	}
+	if ($ext === 'webm') {
+		$kind = (strpos($mime, 'audio/') === 0 || preg_match('/voice|ptt|audio/', $name)) ? 'audio' : 'video';
+		return ['kind' => $kind, 'mime' => $kind === 'audio' ? 'audio/webm' : 'video/webm'];
+	}
+	return ['kind' => 'file', 'mime' => $mime ?: 'application/octet-stream'];
+}
+
+function waCcSniffMediaKind($absPath, $declaredMime = '', $fileName = '')
+{
+	$fallback = waCcMediaKindFromNameMime($declaredMime, $fileName);
+	if (!$absPath || !is_file($absPath)) {
+		return $fallback;
+	}
+	$head = @file_get_contents($absPath, false, null, 0, 64);
+	if ($head === false || $head === '') {
+		return $fallback;
+	}
+	if (strncmp($head, 'OggS', 4) === 0) {
+		return ['kind' => 'audio', 'mime' => 'audio/ogg'];
+	}
+	if (strncmp($head, 'ID3', 3) === 0) {
+		return ['kind' => 'audio', 'mime' => 'audio/mpeg'];
+	}
+	if (strlen($head) >= 2 && ord($head[0]) === 0xFF && (ord($head[1]) & 0xE0) === 0xE0) {
+		return ['kind' => 'audio', 'mime' => 'audio/mpeg'];
+	}
+	if (strncmp($head, 'RIFF', 4) === 0 && strlen($head) >= 12) {
+		$sub = substr($head, 8, 4);
+		if ($sub === 'WAVE') {
+			return ['kind' => 'audio', 'mime' => 'audio/wav'];
+		}
+		if ($sub === 'WEBP') {
+			return ['kind' => 'image', 'mime' => 'image/webp'];
+		}
+		if ($sub === 'AVI ') {
+			return ['kind' => 'video', 'mime' => 'video/x-msvideo'];
+		}
+	}
+	if (strlen($head) >= 12 && substr($head, 4, 4) === 'ftyp') {
+		$brand = substr($head, 8, 4);
+		if (preg_match('/^(M4A |M4B |mp4a)/', $brand)) {
+			return ['kind' => 'audio', 'mime' => 'audio/mp4'];
+		}
+		return ['kind' => 'video', 'mime' => 'video/mp4'];
+	}
+	if (strncmp($head, "\x1A\x45\xDF\xA3", 4) === 0) {
+		$kind = ($fallback['kind'] === 'audio') ? 'audio' : 'video';
+		return ['kind' => $kind, 'mime' => $kind === 'audio' ? 'audio/webm' : 'video/webm'];
+	}
+	if (strlen($head) >= 3 && ord($head[0]) === 0xFF && ord($head[1]) === 0xD8 && ord($head[2]) === 0xFF) {
+		return ['kind' => 'image', 'mime' => 'image/jpeg'];
+	}
+	if (strncmp($head, "\x89PNG", 4) === 0) {
+		return ['kind' => 'image', 'mime' => 'image/png'];
+	}
+	if (strncmp($head, 'GIF8', 4) === 0) {
+		return ['kind' => 'image', 'mime' => 'image/gif'];
+	}
+	return $fallback;
+}
+
+function waCcOggDurationSec($absPath)
+{
+	if (!$absPath || !is_file($absPath)) {
+		return 0.0;
+	}
+	$size = filesize($absPath);
+	if ($size < 27) {
+		return 0.0;
+	}
+	$read = (int)min(65536, $size);
+	$fh = @fopen($absPath, 'rb');
+	if (!$fh) {
+		return 0.0;
+	}
+	fseek($fh, $size - $read);
+	$buf = fread($fh, $read);
+	fclose($fh);
+	if ($buf === false || $buf === '') {
+		return 0.0;
+	}
+	$pos = strrpos($buf, 'OggS');
+	if ($pos === false || ($pos + 14) > strlen($buf)) {
+		return 0.0;
+	}
+	$lo = unpack('V', substr($buf, $pos + 6, 4));
+	$hi = unpack('V', substr($buf, $pos + 10, 4));
+	$granule = (float)($lo[1] ?? 0) + (float)($hi[1] ?? 0) * 4294967296.0;
+	if ($granule <= 0) {
+		return 0.0;
+	}
+	$sec = $granule / 48000.0;
+	if ($sec > 3600) {
+		$sec = $granule / 16000.0;
+	}
+	if ($sec <= 0 || $sec > 3600) {
+		return 0.0;
+	}
+	return round($sec, 2);
+}
+
+function waCcStreamMediaFile($absPath, $mime, $fileName, $kind, $duration = 0)
+{
+	$size = filesize($absPath);
+	$start = 0;
+	$end = $size - 1;
+	$code = 200;
+	$range = isset($_SERVER['HTTP_RANGE']) ? (string)$_SERVER['HTTP_RANGE'] : '';
+	if ($range !== '' && preg_match('/bytes=(\d*)-(\d*)/', $range, $m)) {
+		if ($m[1] === '' && $m[2] !== '') {
+			$start = max(0, $size - (int)$m[2]);
+			$end = $size - 1;
+		} else {
+			if ($m[1] !== '') {
+				$start = (int)$m[1];
+			}
+			if ($m[2] !== '') {
+				$end = (int)$m[2];
+			}
+		}
+		if ($end >= $size) {
+			$end = $size - 1;
+		}
+		if ($start > $end || $start < 0) {
+			http_response_code(416);
+			header('Content-Range: bytes */' . $size);
+			exit;
+		}
+		$code = 206;
+	}
+	$length = $end - $start + 1;
+	http_response_code($code);
+	if (!headers_sent()) {
+		header_remove('Content-Type');
+	}
+	header('Content-Type: ' . $mime);
+	header('X-WA-Media-Kind: ' . $kind);
+	if ($duration > 0) {
+		header('X-WA-Duration: ' . $duration);
+	}
+	header('Accept-Ranges: bytes');
+	header('Content-Length: ' . $length);
+	if ($code === 206) {
+		header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+	}
+	header('Cache-Control: private, max-age=3600');
+	header('Content-Disposition: inline; filename="' . rawurlencode($fileName) . '"');
+	if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+		exit;
+	}
+	$fp = fopen($absPath, 'rb');
+	if ($fp === false) {
+		http_response_code(500);
+		exit;
+	}
+	if ($start > 0) {
+		fseek($fp, $start);
+	}
+	$left = $length;
+	while ($left > 0 && !feof($fp)) {
+		$chunk = fread($fp, min(8192, $left));
+		if ($chunk === false || $chunk === '') {
+			break;
+		}
+		echo $chunk;
+		$left -= strlen($chunk);
+	}
+	fclose($fp);
+	exit;
+}
+
+function waCcFfmpegPath()
+{
+	$local = __DIR__ . '/bin/ffmpeg';
+	if (is_file($local) && is_executable($local)) {
+		return $local;
+	}
+	$which = trim((string)@shell_exec('command -v ffmpeg 2>/dev/null'));
+	return $which !== '' ? $which : '';
+}
+
+function waCcAudioCacheDir()
+{
+	$dir = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/\\') . '/upload/wa_cc_audio_cache';
+	if ($dir !== '/upload/wa_cc_audio_cache' && !is_dir($dir)) {
+		@mkdir($dir, 0775, true);
+	}
+	return $dir;
+}
+
+function waCcWantMobileAudioMp3()
+{
+	$fmt = strtolower((string)($_GET['fmt'] ?? ''));
+	if ($fmt === 'mp3' || $fmt === 'mpeg') {
+		return true;
+	}
+	if ($fmt === 'orig' || $fmt === 'ogg') {
+		return false;
+	}
+	$ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+	return (bool)preg_match('/BitrixMobile|BXMobileApp|Bitrix24\.Mobile|Android|iPhone|iPad/i', $ua);
+}
+
+function waCcNeedsMp3Transcode($absPath, $mime, $fileName)
+{
+	$mime = strtolower((string)$mime);
+	$ext = strtolower(pathinfo((string)$fileName, PATHINFO_EXTENSION));
+	if (preg_match('/^(mp3|m4a|aac|wav)$/', $ext)) {
+		return false;
+	}
+	if (strpos($mime, 'mpeg') !== false || strpos($mime, 'mp4') !== false || strpos($mime, 'aac') !== false || strpos($mime, 'wav') !== false) {
+		return false;
+	}
+	return (bool)(
+		preg_match('/^(ogg|oga|opus|webm)$/', $ext)
+		|| strpos($mime, 'ogg') !== false
+		|| strpos($mime, 'opus') !== false
+		|| strpos($mime, 'webm') !== false
+	);
+}
+
+/**
+ * BitrixMobile WebView не играет WhatsApp ogg/opus → кэш mp3.
+ * @return string|null abs path to mp3
+ */
+function waCcTranscodeAudioToMp3($absPath, $fileId)
+{
+	$ffmpeg = waCcFfmpegPath();
+	if ($ffmpeg === '' || !is_file($absPath)) {
+		return null;
+	}
+	$fileId = (int)$fileId;
+	$mtime = (int)@filemtime($absPath);
+	$dir = waCcAudioCacheDir();
+	if (!is_dir($dir)) {
+		return null;
+	}
+	$cache = $dir . '/f' . $fileId . '_' . $mtime . '.mp3';
+	if (is_file($cache) && filesize($cache) > 64) {
+		return $cache;
+	}
+	$tmp = $cache . '.part.mp3';
+	$cmd = escapeshellarg($ffmpeg)
+		. ' -hide_banner -loglevel error -y -i ' . escapeshellarg($absPath)
+		. ' -vn -acodec libmp3lame -aq 4 '
+		. escapeshellarg($tmp);
+	@exec($cmd, $out, $code);
+	if ((int)$code !== 0 || !is_file($tmp) || filesize($tmp) <= 64) {
+		@unlink($tmp);
+		return null;
+	}
+	@rename($tmp, $cache);
+	@unlink($tmp);
+	return is_file($cache) ? $cache : null;
+}
+
+if (isset($_GET['wa_ticks'])) {
+	require_once __DIR__ . '/app/wa_ticks.php';
+	$rawKeys = (string)($_GET['keys'] ?? $_GET['wa_ticks'] ?? '');
+	$keys = array_values(array_filter(array_map('trim', explode(',', $rawKeys))));
+	$lineId = (int)($_GET['line'] ?? $_GET['lineId'] ?? 0);
+	$row = function_exists('waCcTicksBestForKeysWithPoll')
+		? waCcTicksBestForKeysWithPoll($keys, $lineId)
+		: waCcTicksBestForKeys($keys);
+	header('Content-Type: application/json; charset=utf-8');
+	header('Cache-Control: no-store');
+	echo json_encode([
+		'ok' => true,
+		'status' => $row['status'] ?? '',
+		'ts' => (int)($row['ts'] ?? 0),
+		'idMessage' => $row['idMessage'] ?? '',
+	], JSON_UNESCAPED_UNICODE);
+	exit;
+}
+
+/**
  * Прокси медиафайлов чата через сессию портала.
  * REST im.v2.File.download / disk.file.get часто 400/401 — обходим.
  */
@@ -69,10 +365,13 @@ if (!empty($_GET['wa_media'])) {
 	}
 
 	if (!$USER || !$USER->IsAuthorized()) {
-		http_response_code(401);
-		header('Content-Type: text/plain; charset=utf-8');
-		echo 'Auth required';
-		exit;
+		$mediaAuthed = !empty($GLOBALS['WA_CC_MEDIA_AUTHED']);
+		if (!$mediaAuthed) {
+			http_response_code(401);
+			header('Content-Type: text/plain; charset=utf-8');
+			echo 'Auth required';
+			exit;
+		}
 	}
 
 	$fileId = (int)$_GET['wa_media'];
@@ -91,20 +390,8 @@ if (!empty($_GET['wa_media'])) {
 		try {
 			$diskFile = \Bitrix\Disk\File::loadById($fileId);
 			if ($diskFile) {
-				$ok = true;
-				try {
-					$storage = $diskFile->getStorage();
-					if ($storage) {
-						$securityContext = $storage->getCurrentUserSecurityContext();
-						$ok = $diskFile->canRead($securityContext);
-					}
-				} catch (\Throwable $e) {
-					$ok = true;
-				}
-				if ($ok) {
-					$diskFileObj = $diskFile;
-					$fileArray = $diskFile->getFile();
-				}
+				$diskFileObj = $diskFile;
+				$fileArray = $diskFile->getFile();
 			}
 		} catch (\Throwable $e) {
 			$fileArray = null;
@@ -177,15 +464,50 @@ if (!empty($_GET['wa_media'])) {
 	// Прямой стрим надёжнее ViewByUser для <img>/<audio> (нет лишних редиректов)
 	$filePath = \CFile::GetPath($fileArray['ID']);
 	$absPath = $filePath ? ($_SERVER['DOCUMENT_ROOT'] . $filePath) : '';
-	if ($absPath && is_file($absPath)) {
-		$mime = $fileArray['CONTENT_TYPE'] ?? 'application/octet-stream';
-		$size = filesize($absPath);
-		header('Content-Type: ' . $mime);
-		header('Content-Length: ' . $size);
+	if ((!$absPath || !is_file($absPath)) && !empty($fileArray['SRC'])) {
+		$absPath = $_SERVER['DOCUMENT_ROOT'] . $fileArray['SRC'];
+	}
+	$fileName = $fileArray['ORIGINAL_NAME'] ?? $fileArray['FILE_NAME'] ?? 'file';
+	if ($diskFileObj) {
+		try {
+			$diskName = (string)$diskFileObj->getName();
+			if ($diskName !== '') {
+				$fileName = $diskName;
+			}
+		} catch (\Throwable $e) {
+			/* keep b_file name */
+		}
+	}
+	$declaredMime = $fileArray['CONTENT_TYPE'] ?? 'application/octet-stream';
+	$sniff = waCcSniffMediaKind($absPath, $declaredMime, $fileName);
+	$sniff['name'] = $fileName;
+	$sniff['ext'] = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+	$duration = 0.0;
+	if ($sniff['kind'] === 'audio' && $absPath && is_file($absPath)) {
+		$duration = waCcOggDurationSec($absPath);
+	}
+	$sniff['duration'] = $duration;
+
+	if (!empty($_GET['kind'])) {
+		header('Content-Type: application/json; charset=utf-8');
 		header('Cache-Control: private, max-age=3600');
-		header('Content-Disposition: inline; filename="' . rawurlencode($fileArray['ORIGINAL_NAME'] ?? $fileArray['FILE_NAME'] ?? 'file') . '"');
-		readfile($absPath);
+		echo json_encode($sniff);
 		exit;
+	}
+
+	if ($absPath && is_file($absPath)) {
+		if (
+			$sniff['kind'] === 'audio'
+			&& waCcWantMobileAudioMp3()
+			&& waCcNeedsMp3Transcode($absPath, $sniff['mime'], $fileName)
+		) {
+			$mp3 = waCcTranscodeAudioToMp3($absPath, $fileId);
+			if ($mp3) {
+				$mp3Name = preg_replace('/\.[^.]+$/', '', $fileName) . '.mp3';
+				waCcStreamMediaFile($mp3, 'audio/mpeg', $mp3Name, 'audio', $duration);
+			}
+		}
+		waCcStreamMediaFile($absPath, $sniff['mime'], $fileName, $sniff['kind'], $duration);
 	}
 
 	header('Cache-Control: private, max-age=3600');
@@ -287,6 +609,168 @@ if (isset($_GET['wa_resolve_ol'])) {
 	}
 
 	echo json_encode($out, JSON_UNESCAPED_UNICODE);
+	exit;
+}
+
+if (isset($_GET['wa_resolve_uc'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+
+	global $USER;
+	header('Content-Type: application/json; charset=utf-8');
+	if (!$USER || !$USER->IsAuthorized()) {
+		http_response_code(401);
+		echo json_encode(['error' => 'auth']);
+		exit;
+	}
+
+	$userCode = trim((string)$_GET['wa_resolve_uc']);
+	if ($userCode === '') {
+		echo json_encode(['chatId' => 0, 'title' => '', 'entity_id' => '']);
+		exit;
+	}
+
+	try {
+		\Bitrix\Main\Loader::includeModule('imopenlines');
+	} catch (\Throwable $e) {
+		echo json_encode(['chatId' => 0, 'title' => '', 'entity_id' => '']);
+		exit;
+	}
+
+	try {
+		$data = \CRest::call('imopenlines.dialog.get', ['USER_CODE' => $userCode]);
+		$dialog = is_array($data) ? (($data['result'] ?? null) ?: $data) : [];
+		echo json_encode([
+			'chatId' => (int)($dialog['id'] ?? 0),
+			'title' => (string)($dialog['name'] ?? $dialog['title'] ?? ''),
+			'entity_id' => (string)($dialog['entity_id'] ?? ''),
+		], JSON_UNESCAPED_UNICODE);
+		exit;
+	} catch (\Throwable $e) {
+		echo json_encode(['chatId' => 0, 'title' => '', 'entity_id' => '']);
+		exit;
+	}
+}
+
+function waCcGroupTitlePickCandidate($value)
+{
+	$s = trim((string)$value);
+	if ($s === '') return '';
+	if (preg_match('/@g\.us|@c\.us|green-?api|whatsapp|documentmessage|imagemessage|videomessage|audiomessage/i', $s)) return '';
+	if (preg_match('/^\+?\d[\d\s\-()]{7,}$/', $s)) return '';
+	if (mb_strlen($s) < 3) return '';
+	return $s;
+}
+
+function waCcGroupTitleCollectFromSettings($node, array &$out)
+{
+	if (is_array($node)) {
+		foreach ($node as $k => $v) {
+			$key = strtolower((string)$k);
+			if (is_scalar($v) && preg_match('/(?:^|_)(groupname|group_name|chatname|chat_name|title|subject|name)$/i', $key)) {
+				$candidate = waCcGroupTitlePickCandidate($v);
+				if ($candidate !== '') $out[] = $candidate;
+			}
+			waCcGroupTitleCollectFromSettings($v, $out);
+		}
+	}
+}
+
+function waCcGroupTitleFromActivities($chatId)
+{
+	$chatId = (int)$chatId;
+	if ($chatId <= 0) return '';
+	try {
+		\Bitrix\Main\Loader::includeModule('crm');
+	} catch (\Throwable $e) {
+		return '';
+	}
+
+	$candidates = [];
+	try {
+		$res = \CCrmActivity::GetList(
+			['ID' => 'DESC'],
+			[
+				'ASSOCIATED_ENTITY_ID' => $chatId,
+				'CHECK_PERMISSIONS' => 'N',
+			],
+			false,
+			['nTopCount' => 40],
+			['ID', 'SUBJECT', 'SETTINGS']
+		);
+		while ($act = $res->Fetch()) {
+			$subject = waCcGroupTitlePickCandidate($act['SUBJECT'] ?? '');
+			if ($subject !== '') $candidates[] = $subject;
+			$settings = $act['SETTINGS'] ?? null;
+			if (is_string($settings) && $settings !== '') {
+				$decoded = json_decode($settings, true);
+				if (!is_array($decoded)) {
+					$decoded = @unserialize($settings);
+				}
+				if (is_array($decoded)) {
+					$settings = $decoded;
+				}
+			}
+			if (is_array($settings)) {
+				waCcGroupTitleCollectFromSettings($settings, $candidates);
+			}
+		}
+	} catch (\Throwable $e) {
+		return '';
+	}
+
+	foreach ($candidates as $candidate) {
+		if (preg_match('/[-–—]/u', $candidate)) {
+			$parts = preg_split('/\s*[-–—]\s*/u', $candidate);
+			foreach ($parts as $part) {
+				$part = waCcGroupTitlePickCandidate($part);
+				if ($part !== '') return $part;
+			}
+		}
+		$clean = waCcGroupTitlePickCandidate($candidate);
+		if ($clean !== '') return $clean;
+	}
+	return '';
+}
+
+if (isset($_GET['wa_group_title'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+	global $USER;
+	header('Content-Type: application/json; charset=utf-8');
+	if (!$USER || !$USER->IsAuthorized()) {
+		http_response_code(401);
+		echo json_encode(['error' => 'auth']);
+		exit;
+	}
+	require_once __DIR__ . '/app/wa_group_titles.php';
+	$chatId = (int)($_GET['chat'] ?? 0);
+	$groupId = trim((string)($_GET['group'] ?? $_GET['groupId'] ?? ''));
+	$title = '';
+	$resolvedGroupId = '';
+	if ($groupId !== '') {
+		$resolvedGroupId = waCcGroupTitlesNormalizeId($groupId);
+		$title = waCcGroupTitlesGet($resolvedGroupId);
+		if ($title === '' && $resolvedGroupId !== '') {
+			$title = waCcGroupTitlesFetchFromGreenApi($resolvedGroupId);
+			if ($title !== '') {
+				waCcGroupTitlesSet($resolvedGroupId, $title, ['source' => 'getGroupData']);
+			}
+		}
+	} elseif ($chatId > 0) {
+		$fromChat = waCcGroupTitlesFromChatId($chatId);
+		$resolvedGroupId = (string)($fromChat['groupId'] ?? '');
+		$title = (string)($fromChat['title'] ?? '');
+		if ($title === '') {
+			$title = waCcGroupTitleFromActivities($chatId);
+		}
+	}
+	echo json_encode([
+		'title' => $title,
+		'groupId' => $resolvedGroupId,
+	], JSON_UNESCAPED_UNICODE);
 	exit;
 }
 
@@ -755,6 +1239,17 @@ if ($waEmbed) {
 }
 
 .wa-chat-list { flex: 1; overflow-y: auto; }
+.wa-chat-list.wa-list-searching::after {
+	content: 'Поиск...';
+	display: block;
+	text-align: center;
+	padding: 6px 14px;
+	color: var(--wa-muted);
+	font-size: 13px;
+	position: sticky;
+	bottom: 0;
+	background: rgba(255, 255, 255, 0.92);
+}
 .wa-chat-item {
 	display: flex;
 	align-items: center;
@@ -921,7 +1416,55 @@ if ($waEmbed) {
 	border: 1px solid #a8c8e8;
 }
 .wa-ol-btn-crm:hover { background: #edf4fb; }
+.wa-ol-btn-crm { text-decoration: none; display: inline-block; box-sizing: border-box; }
 .wa-ol-btn:disabled { opacity: .5; cursor: default; }
+.wa-msg-actions {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	display: flex;
+	gap: 2px;
+	z-index: 2;
+	opacity: 0;
+	pointer-events: none;
+}
+.wa-msg:hover .wa-msg-actions,
+.wa-msg:focus-within .wa-msg-actions,
+body.wa-cc-mobile .wa-msg-actions {
+	opacity: 1;
+	pointer-events: none;
+}
+.wa-msg:hover .wa-msg-actions > *,
+.wa-msg:focus-within .wa-msg-actions > *,
+body.wa-cc-mobile .wa-msg-actions > * {
+	pointer-events: auto;
+}
+.wa-msg.system .wa-msg-actions { display: none; }
+.wa-msg-reply-btn,
+.wa-msg-fwd-btn {
+	border: none;
+	background: rgba(255,255,255,.92);
+	color: #54656f;
+	border-radius: 999px;
+	width: 28px;
+	height: 28px;
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: 0 1px 3px rgba(11,20,26,.12);
+	padding: 0;
+}
+.wa-msg-fwd-btn { font-size: 15px; }
+.wa-msg .wa-msg-from { display: block; font-size: 12.5px; font-weight: 600; color: #06cf9c; margin-bottom: 3px; padding-right: 62px; }
+.wa-msg.out .wa-msg-from { color: #1a7f4c; }
+body.wa-cc-mobile .wa-msg.out .wa-msg-actions {
+	top: 2px;
+	bottom: auto;
+	right: 2px;
+}
+body.wa-cc-mobile .wa-msg.has-audio {
+	margin-top: 4px;
+}
 
 .wa-messages-container {
 	flex: 1;
@@ -971,13 +1514,61 @@ if ($waEmbed) {
 	font-size: 13px;
 	padding: 8px 12px;
 }
-.wa-msg .wa-msg-from { display: block; font-size: 12.5px; font-weight: 600; color: #06cf9c; margin-bottom: 3px; }
-.wa-msg.out .wa-msg-from { color: #1a7f4c; }
-.wa-msg .wa-msg-time { display: block; text-align: right; font-size: 11px; color: var(--wa-muted); margin-top: 2px; margin-left: 12px; float: right; position: relative; top: 4px; }
+.wa-msg .wa-msg-time {
+	display: inline-flex;
+	align-items: flex-end;
+	gap: 3px;
+	text-align: right;
+	font-size: 11px;
+	color: var(--wa-muted);
+	margin-top: 2px;
+	margin-left: 12px;
+	float: right;
+	position: relative;
+	top: 4px;
+}
+.wa-ticks {
+	display: inline-flex;
+	width: 16px;
+	height: 11px;
+	flex-shrink: 0;
+	position: relative;
+	top: -1px;
+	color: #667781;
+}
+.wa-ticks.read { color: #53bdeb; }
+.wa-ticks svg { display: block; width: 16px; height: 11px; }
 .wa-msg .wa-media { margin: 4px 0; clear: both; }
 .wa-msg .wa-media img { max-width: 100%; max-height: 320px; border-radius: 6px; display: block; cursor: pointer; }
 .wa-msg .wa-media video, .wa-msg .wa-media audio { max-width: 280px; display: block; min-width: 220px; }
 .wa-msg .wa-media audio.wa-voice { min-width: 240px; height: 36px; }
+.wa-msg .wa-media-audio { display: flex; align-items: center; gap: 8px; position: relative; z-index: 5; }
+.wa-msg .wa-audio-dur { font-size: 12px; color: var(--wa-muted); white-space: nowrap; min-width: 2.5em; }
+body.wa-cc-mobile .wa-msg .wa-media-audio,
+body.wa-cc-mobile .wa-msg audio.wa-voice {
+	position: relative;
+	z-index: 6;
+	pointer-events: auto !important;
+	-webkit-transform: translateZ(0);
+	transform: translateZ(0);
+}
+body.wa-cc-mobile .wa-msg.has-audio .wa-msg-actions,
+body.wa-cc-mobile .wa-msg.out.has-audio .wa-msg-actions {
+	display: none !important;
+}
+body.wa-cc-mobile .wa-msg.has-audio .wa-msg-time {
+	float: none;
+	display: block;
+	clear: both;
+	margin-left: 0;
+	text-align: right;
+}
+body.wa-cc-mobile .wa-msg audio.wa-voice {
+	min-width: 260px;
+	width: 100%;
+	max-width: 280px;
+	height: 40px;
+}
 .wa-msg .wa-media .wa-media-loading { font-size: 13px; color: var(--wa-muted); padding: 6px 0; }
 .wa-msg .wa-file-link { display: inline-flex; align-items: center; gap: 6px; color: #027eb5; text-decoration: none; word-break: break-all; }
 .wa-msg-quote {
@@ -1162,6 +1753,91 @@ if ($waEmbed) {
 }
 .wa-lightbox-close:hover, .wa-lightbox-dl:hover { background: rgba(255,255,255,.22); }
 
+.wa-fwd {
+	position: fixed; inset: 0; z-index: 100010;
+	background: rgba(11,20,26,.45);
+	display: none; align-items: flex-end; justify-content: center;
+}
+.wa-fwd.open { display: flex; }
+.wa-fwd-panel {
+	width: min(440px, 100%);
+	max-height: 88vh;
+	background: #fff;
+	border-radius: 16px 16px 0 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	box-shadow: 0 -8px 32px rgba(11,20,26,.18);
+}
+.wa-fwd-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px;
+	border-bottom: 1px solid #f0f0f0;
+}
+.wa-fwd-head .wa-fwd-title { flex: 1; font-size: 16px; font-weight: 600; }
+.wa-fwd-close, .wa-fwd-go {
+	border: none; background: transparent; cursor: pointer;
+	height: 36px; border-radius: 8px; font-size: 14px; font-weight: 600;
+}
+.wa-fwd-close { width: 36px; font-size: 22px; color: #54656f; }
+.wa-fwd-go { color: #fff; background: var(--wa-teal); padding: 0 14px; }
+.wa-fwd-go:disabled { opacity: .4; cursor: default; }
+.wa-fwd-preview {
+	margin: 8px 12px 0;
+	padding: 8px 10px;
+	background: #f0f2f5;
+	border-radius: 8px;
+	font-size: 13px;
+	color: #54656f;
+	max-height: 72px;
+	overflow: hidden;
+}
+.wa-fwd-search { padding: 8px 12px; }
+.wa-fwd-search input {
+	width: 100%; box-sizing: border-box;
+	border: 1px solid #e9edef; border-radius: 8px;
+	padding: 9px 12px; font: inherit; font-size: 14px; outline: none;
+}
+.wa-fwd-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	-webkit-overflow-scrolling: touch;
+	overscroll-behavior: contain;
+	touch-action: pan-y;
+}
+.wa-fwd-list.wa-list-searching::after {
+	content: 'Идёт поиск...';
+	display: block;
+	text-align: center;
+	padding: 8px 14px 12px;
+	color: var(--wa-muted);
+	font-size: 13px;
+	position: sticky;
+	bottom: 0;
+	background: rgba(255, 255, 255, 0.94);
+}
+.wa-fwd-item {
+	display: flex; align-items: center; gap: 10px;
+	padding: 8px 14px; cursor: pointer; border-bottom: 1px solid #f6f6f6;
+}
+.wa-fwd-item:hover { background: #f5f6f6; }
+.wa-fwd-item.on { background: #e7f8f2; }
+.wa-fwd-item .wa-fwd-meta { flex: 1; min-width: 0; }
+.wa-fwd-item .wa-fwd-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wa-fwd-item .wa-fwd-sub { font-size: 12px; color: #667781; }
+.wa-fwd-check {
+	width: 22px; height: 22px; border-radius: 50%;
+	border: 2px solid #c5c9cc; flex-shrink: 0;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 12px; color: #fff;
+}
+.wa-fwd-item.on .wa-fwd-check { background: var(--wa-teal); border-color: var(--wa-teal); }
+body.wa-cc-mobile .wa-fwd-panel { width: 100%; max-height: 92dvh; }
+
 @media (max-width: 900px) {
 	.wa-sidebar { min-width: 280px; width: 38%; }
 	.wa-messages-container { padding: 12px 4%; }
@@ -1316,8 +1992,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				<div class="sub" id="wa-active-sub">Открытые линии</div>
 			</div>
 			<div class="wa-header-actions" id="wa-header-actions">
-				<button type="button" class="wa-ol-btn wa-ol-btn-crm" id="wa-btn-lead" style="display:none;">Лид</button>
-				<button type="button" class="wa-ol-btn wa-ol-btn-crm" id="wa-btn-deal" style="display:none;">Сделка</button>
+				<a href="#" role="button" class="wa-ol-btn wa-ol-btn-crm" id="wa-btn-lead" style="display:none;">Лид</a>
+				<a href="#" role="button" class="wa-ol-btn wa-ol-btn-crm" id="wa-btn-deal" style="display:none;">Сделка</a>
 				<button type="button" class="wa-ol-btn wa-ol-btn-answer" id="wa-btn-answer" style="display:none;">Принять</button>
 				<button type="button" class="wa-ol-btn wa-ol-btn-finish" id="wa-btn-finish" style="display:none;">Завершить</button>
 			</div>
@@ -1365,6 +2041,21 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	<button type="button" class="wa-lightbox-dl" id="wa-lightbox-dl" title="Скачать">Скачать</button>
 	<button type="button" class="wa-lightbox-close" id="wa-lightbox-close" title="Закрыть" aria-label="Закрыть">×</button>
 	<img id="wa-lightbox-img" alt="">
+</div>
+
+<div class="wa-fwd" id="wa-fwd" role="dialog" aria-modal="true" aria-label="Переслать сообщение">
+	<div class="wa-fwd-panel">
+		<div class="wa-fwd-head">
+			<button type="button" class="wa-fwd-close" id="wa-fwd-close" title="Закрыть" aria-label="Закрыть">×</button>
+			<div class="wa-fwd-title" id="wa-fwd-title">Переслать</div>
+			<button type="button" class="wa-fwd-go" id="wa-fwd-go" disabled>Отправить</button>
+		</div>
+		<div class="wa-fwd-preview" id="wa-fwd-preview"></div>
+		<div class="wa-fwd-search">
+			<input type="search" id="wa-fwd-search" placeholder="Поиск чата или номера" autocomplete="off">
+		</div>
+		<div class="wa-fwd-list" id="wa-fwd-list"></div>
+	</div>
 </div>
 
 <script>
@@ -1431,11 +2122,20 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	/** Лид/сделка из placement (?leadId= / ?dealId=) — приоритет над entity_data_2 чата */
 	let crmContextLeadId = <?= (int)$waCrmLeadId ?>;
 	let crmContextDealId = <?= (int)$waCrmDealId ?>;
+	/** Жёсткий контекст из URL/placement — не перебивается sessionStorage чата */
+	let crmPlacementLeadId = <?= (int)$waCrmLeadId ?>;
+	let crmPlacementDealId = <?= (int)$waCrmDealId ?>;
 	(function initCrmContextFromQuery() {
 		try {
 			const boot = window.__WA_CC_BOOT || {};
-			if (parseInt(boot.crmLeadId, 10) > 0) crmContextLeadId = parseInt(boot.crmLeadId, 10);
-			if (parseInt(boot.crmDealId, 10) > 0) crmContextDealId = parseInt(boot.crmDealId, 10);
+			if (parseInt(boot.crmLeadId, 10) > 0) {
+				crmContextLeadId = parseInt(boot.crmLeadId, 10);
+				crmPlacementLeadId = crmContextLeadId;
+			}
+			if (parseInt(boot.crmDealId, 10) > 0) {
+				crmContextDealId = parseInt(boot.crmDealId, 10);
+				crmPlacementDealId = crmContextDealId;
+			}
 			const sp = (typeof window.waCcParams === 'function')
 				? window.waCcParams()
 				: new URLSearchParams(window.location.search);
@@ -1446,18 +2146,16 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			};
 			const qLead = parseId(sp.get('leadId') || sp.get('LEAD_ID'));
 			const qDeal = parseId(sp.get('dealId') || sp.get('DEAL_ID'));
-			if (qLead > 0) crmContextLeadId = qLead;
-			if (qDeal > 0) crmContextDealId = qDeal;
-			if (!crmContextLeadId && !crmContextDealId) {
-				const raw = sessionStorage.getItem('wa_cc_crm_ctx');
-				if (raw) {
-					const saved = JSON.parse(raw);
-					if (saved && (Date.now() - (saved.ts || 0)) < 86400000) {
-						if (parseInt(saved.leadId, 10) > 0) crmContextLeadId = parseInt(saved.leadId, 10);
-						if (parseInt(saved.dealId, 10) > 0) crmContextDealId = parseInt(saved.dealId, 10);
-					}
-				}
+			if (qLead > 0) {
+				crmContextLeadId = qLead;
+				crmPlacementLeadId = qLead;
 			}
+			if (qDeal > 0) {
+				crmContextDealId = qDeal;
+				crmPlacementDealId = qDeal;
+			}
+			// Не восстанавливаем lead/deal из sessionStorage — при запуске приложения
+			// из меню подтягивался старый лид (332043) вместо актуального для чата.
 			if (crmContextLeadId || crmContextDealId) {
 				sessionStorage.setItem('wa_cc_crm_ctx', JSON.stringify({
 					leadId: crmContextLeadId,
@@ -1480,7 +2178,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function restoreCrmContextForChat(chatId) {
-		if (!chatId || crmContextLeadId || crmContextDealId) return;
+		if (!chatId || crmPlacementLeadId || crmPlacementDealId || crmContextLeadId || crmContextDealId) return;
 		try {
 			const raw = sessionStorage.getItem('wa_cc_ctx_chat_' + chatId);
 			if (!raw) return;
@@ -1492,8 +2190,16 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function getEffectiveCrmId(type) {
-		if (type === 'lead') return crmContextLeadId || crmBindings.leadId || 0;
-		if (type === 'deal') return crmContextDealId || crmBindings.dealId || 0;
+		if (type === 'lead') {
+			if (crmPlacementLeadId > 0) return crmPlacementLeadId;
+			if (crmContextLeadId > 0) return crmContextLeadId;
+			return crmBindings.leadId || 0;
+		}
+		if (type === 'deal') {
+			if (crmPlacementDealId > 0) return crmPlacementDealId;
+			if (crmContextDealId > 0) return crmContextDealId;
+			return crmBindings.dealId || 0;
+		}
 		return 0;
 	}
 
@@ -1528,13 +2234,24 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let searchDebounceId = null;
 	let searchRemoteLoading = false;
 	let lastRemoteSearchKey = '';
+	let searchRecentLoaded = false;
 	const failedPhoneLookups = new Set();
 	const failedUserCodeLookups = new Set();
 	const failedCrmEntityChatLookups = new Set();
 	const olIdResolveCache = new Map();
 	const crmNameCache = new Map();
+	const crmLeadResolveCache = new Map();
+	const groupTitleCache = new Map();
 	const messagesById = {};
 	let replyTo = null;
+	let forwardMsg = null;
+	let forwardSelected = new Set();
+	let forwardSearchQuery = '';
+	let forwardSearchTimer = null;
+	let forwardRemoteChats = [];
+	let forwardSearchLoading = false;
+	let opponentReadMessageId = 0;
+	let waChatTickStatus = '';
 
 	const listEl = document.getElementById('wa-chat-list');
 	const tabsEl = document.getElementById('wa-tabs');
@@ -1573,6 +2290,14 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const lightboxClose = document.getElementById('wa-lightbox-close');
 	const lightboxDl = document.getElementById('wa-lightbox-dl');
 	let lightboxDownloadUrl = '';
+
+	const fwdEl = document.getElementById('wa-fwd');
+	const fwdListEl = document.getElementById('wa-fwd-list');
+	const fwdSearchEl = document.getElementById('wa-fwd-search');
+	const fwdPreviewEl = document.getElementById('wa-fwd-preview');
+	const fwdTitleEl = document.getElementById('wa-fwd-title');
+	const fwdGoBtn = document.getElementById('wa-fwd-go');
+	const fwdCloseBtn = document.getElementById('wa-fwd-close');
 
 	/* —— voice —— */
 	let mediaRecorder = null;
@@ -1801,9 +2526,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	async function resolveChatIdByUserCode(userCode) {
 		if (!userCode || failedUserCodeLookups.has(userCode)) return 0;
 		try {
-			const data = await rest('imopenlines.dialog.get', { USER_CODE: userCode });
-			const dialog = data.result || data;
-			const cid = parseInt(dialog.id, 10);
+			const r = await fetch('/local/custom_chat/?wa_resolve_uc=' + encodeURIComponent(userCode), { credentials: 'same-origin' });
+			if (!r.ok) throw new Error('resolve_uc_http_' + r.status);
+			const data = await r.json();
+			const cid = parseInt(data && data.chatId, 10);
 			if (cid) return cid;
 		} catch (e) {
 			failedUserCodeLookups.add(userCode);
@@ -1872,6 +2598,28 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return parts.filter(Boolean).join('|').toLowerCase();
 	}
 
+	function getWhatsAppGroupKey(chat) {
+		if (!chat) return '';
+		const parts = [
+			chat.chat && chat.chat.entity_id,
+			chat.entity_id,
+			chat.chat && chat.chat.entity_data_1,
+			chat.chat && chat.chat.entity_data_2,
+			chat.chat && chat.chat.entity_data_3,
+			resolveDialogId(chat),
+		].filter(Boolean);
+		for (let i = 0; i < parts.length; i++) {
+			const raw = String(parts[i]);
+			const segs = raw.split('|').filter(Boolean);
+			if (segs.length >= 3 && /@g\.us$/i.test(segs[2])) {
+				return segs[2].toLowerCase();
+			}
+			const m = raw.toLowerCase().match(/(\d{5,20}(?:-\d{5,20})?@g\.us|\d{10,20}@g\.us)/);
+			if (m) return m[1];
+		}
+		return '';
+	}
+
 	function isWhatsAppGroupChat(chat) {
 		if (!isOpenLine(chat)) return false;
 		return /@g\.us\b/i.test(getOlConnectorHaystack(chat));
@@ -1901,10 +2649,19 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	function dedupeChatsByPhone(items) {
 		if (searchQuery.trim()) return items;
 		const byPhone = new Map();
+		const byGroup = new Map();
 		const restItems = [];
 		items.forEach(function (chat) {
 			if (isWhatsAppGroupChat(chat)) {
-				restItems.push(chat);
+				const groupKey = getWhatsAppGroupKey(chat);
+				if (!groupKey) {
+					restItems.push(chat);
+					return;
+				}
+				const prevGroup = byGroup.get(groupKey);
+				if (!prevGroup || getChatSortTime(chat) > getChatSortTime(prevGroup)) {
+					byGroup.set(groupKey, chat);
+				}
 				return;
 			}
 			const phone = getPrimaryPhone(chat);
@@ -1917,7 +2674,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				byPhone.set(phone, chat);
 			}
 		});
-		return sortChatsDesc(restItems.concat(Array.from(byPhone.values())));
+		return sortChatsDesc(restItems.concat(Array.from(byGroup.values()), Array.from(byPhone.values())));
 	}
 
 	function getVisibleChatBase() {
@@ -2052,10 +2809,74 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const t = String(title || '').trim();
 		if (!t) return true;
 		if (/^(?:chat|чат)\s*#\d+$/i.test(t)) return true;
-		if (/whatsapp|green[\s-]?api|wazzup|гость|guest|visitor|клиент\s*#/i.test(t)) return true;
+		if (/^(whatsapp(\s+green[\s-]?api(\.com)?)?|green[\s-]?api(\.com)?|wazzup|chatapp|гость|guest|visitor|клиент\s*#?\d*)$/i.test(t)) return true;
 		const digits = t.replace(/\D/g, '');
 		if (digits.length >= 10 && digits.length >= t.replace(/\s/g, '').length * 0.7) return true;
 		return false;
+	}
+
+	function getChatRawTitle(chat) {
+		if (!chat) return '';
+		return String(
+			chat.title ||
+			(chat.chat && (chat.chat.name || chat.chat.title)) ||
+			''
+		).trim();
+	}
+
+	function normalizeGroupDisplayTitle(title) {
+		let t = String(title || '').trim();
+		if (!t) return '';
+
+		const dash = t.match(/^(.+?)\s*[-–—]\s*(.+)$/u);
+		if (dash) {
+			const head = dash[1].trim();
+			const tail = dash[2].trim();
+			const olTail = /^(?:опт|уральск|marketing|whatsapp|green)/iu.test(tail)
+				|| /\b\d{3,5}\s*$/.test(tail)
+				|| /\+?\d{10,}/.test(tail)
+				|| /\s+[А-Яа-яёA-Za-z]{2,}(?:\s+\d{3,5})?\s*$/.test(tail);
+			if (olTail && head.length >= 2) {
+				return head;
+			}
+		}
+
+		t = t.replace(/\s[-–—]\s*(?:Опт|Уральск)\s+.+/iu, '').trim();
+		t = t.replace(/\s+(?:Опт|Уральск)\s+[А-Яа-яёA-Za-z]+(?:\s+\d{3,5})?\s*$/iu, '').trim();
+		t = t.replace(/\s+\+?\d[\d\s\-]{8,}\d\s*$/, '').trim();
+		return t || String(title || '').trim();
+	}
+
+	function getWhatsAppGroupDisplayName(chat) {
+		const key = getWhatsAppGroupKey(chat);
+		const cached = key ? String(groupTitleCache.get(key) || '').trim() : '';
+		if (cached && !isGenericOlTitle(cached)) return cached;
+		const raw = getChatRawTitle(chat);
+		const parsed = normalizeGroupDisplayTitle(raw);
+		if (parsed && !isGenericOlTitle(parsed)) return parsed;
+		return parsed || 'Группа';
+	}
+
+	async function fetchGroupTitleFromOl(chat) {
+		const key = getWhatsAppGroupKey(chat);
+		if (!key) return '';
+		if (groupTitleCache.has(key)) return String(groupTitleCache.get(key) || '');
+		const chatId = parseInt(chat && (chat.chat_id || (chat.chat && chat.chat.id)), 10) || 0;
+		try {
+			const url = new URL('/local/custom_chat/', window.location.origin);
+			url.searchParams.set('wa_group_title', '1');
+			if (chatId) url.searchParams.set('chat', String(chatId));
+			else url.searchParams.set('group', key);
+			const resp = await fetch(url.toString(), { credentials: 'same-origin' });
+			if (!resp.ok) throw new Error('wa_group_title_http_' + resp.status);
+			const data = await resp.json();
+			const title = String((data && data.title) || '').trim();
+			groupTitleCache.set(key, title);
+			return title;
+		} catch (e) {
+			groupTitleCache.set(key, '');
+			return '';
+		}
 	}
 
 	function isOperatorUser(user) {
@@ -2112,22 +2933,28 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function getChatDisplayName(chat) {
 		if (!chat) return 'Чат';
+
+		if (isWhatsAppGroupChat(chat)) {
+			if (chat._displayName && !isGenericOlTitle(chat._displayName)) return chat._displayName;
+			return getWhatsAppGroupDisplayName(chat);
+		}
+
 		if (chat._displayName) return chat._displayName;
 
-		const crmName = getCrmDisplayNameFromChat(chat);
-		if (crmName) return crmName;
+		const clientName = getUserPersonName(getChatClientUser(chat));
+		if (clientName) return clientName;
 
 		if (chat._clientUserName && !isGenericOlTitle(chat._clientUserName)) {
 			return chat._clientUserName;
 		}
 
-		const clientName = getUserPersonName(getChatClientUser(chat));
-		if (clientName) return clientName;
+		const crmName = getCrmDisplayNameFromChat(chat);
+		if (crmName) return crmName;
 
 		const phone = getPrimaryPhone(chat);
 		if (phone) return formatPhoneDisplay(phone);
 
-		const raw = chat.title || (chat.chat && chat.chat.name) || '';
+		const raw = getChatRawTitle(chat);
 		if (raw && !isGenericOlTitle(raw)) return raw;
 		return raw || 'Чат';
 	}
@@ -2184,9 +3011,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 		const contactIds = new Set();
 		const leadIds = new Set();
+		const groupChats = [];
 
 		chats.forEach(function (chat) {
-			if (chat._displayName) return;
+			if (isWhatsAppGroupChat(chat)) {
+				groupChats.push(chat);
+				return;
+			}
 			const bindings = getCrmEntityIdsFromChat(chat);
 			if (bindings.contactId) contactIds.add(bindings.contactId);
 			if (bindings.leadId) leadIds.add(bindings.leadId);
@@ -2194,18 +3025,31 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 		await fetchCrmNamesBatch('CONTACT', Array.from(contactIds));
 		await fetchCrmNamesBatch('LEAD', Array.from(leadIds));
+		await Promise.all(groupChats.map(async function (chat) {
+			const title = await fetchGroupTitleFromOl(chat);
+			if (title && !isGenericOlTitle(title)) {
+				chat._displayName = title;
+			}
+		}));
 
 		chats.forEach(function (chat) {
-			if (chat._displayName) return;
+			if (isWhatsAppGroupChat(chat)) {
+				chat._displayName = getWhatsAppGroupDisplayName(chat);
+				return;
+			}
 
-			let name = getCrmDisplayNameFromChat(chat);
+			let name = getUserPersonName(getChatClientUser(chat));
 			if (!name && chat._clientUserName && !isGenericOlTitle(chat._clientUserName)) {
 				name = chat._clientUserName;
 			}
-			if (!name) name = getUserPersonName(getChatClientUser(chat));
+			if (!name) name = getCrmDisplayNameFromChat(chat);
 			if (!name) {
 				const phone = getPrimaryPhone(chat);
 				if (phone) name = formatPhoneDisplay(phone);
+			}
+			if (!name) {
+				const raw = getChatRawTitle(chat);
+				if (raw && !isGenericOlTitle(raw)) name = raw;
 			}
 			if (name) chat._displayName = name;
 		});
@@ -2257,6 +3101,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function parseFileId(v) {
 		if (v == null || v === '') return 0;
+		if (Array.isArray(v)) {
+			for (let i = 0; i < v.length; i++) {
+				const id = parseFileId(v[i]);
+				if (id) return id;
+			}
+			return 0;
+		}
 		if (typeof v === 'object') {
 			return parseFileId(v.id || v.ID || v.fileId || v.FILE_ID || v.diskFileId || v.objectId || v.objectid);
 		}
@@ -2286,16 +3137,19 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function normalizeMediaKind(type, ext, name) {
-		let t = String(type || '').toLowerCase().trim();
-		if (t.indexOf('/') !== -1) t = t.split('/')[0]; // image/jpeg → image
-		const e = String(ext || '').toLowerCase();
+		const e = String(ext || '').toLowerCase().replace(/^\./, '');
 		const n = String(name || '').toLowerCase();
+		if (/^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(e) || /voice|audio_message|голос|\bptt\b/i.test(n)) {
+			return 'audio';
+		}
+		if (e === 'webm' && /voice|audio|ptt/i.test(n)) return 'audio';
+		if (/^(mp4|mov|avi|mkv)$/i.test(e)) return 'video';
+		if (/^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(e)) return 'image';
+
+		let t = String(type || '').toLowerCase().trim();
+		if (t.indexOf('/') !== -1) t = t.split('/')[0];
 		if (!t || t === 'file' || t === 'document') {
-			if (/^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(e)) t = 'image';
-			else if (/^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(e)) t = 'audio';
-			else if (/^(mp4|mov|avi|mkv)$/i.test(e)) t = 'video';
-			else if (/voice|audio_message|голос/i.test(n)) t = 'audio';
-			else if (e === 'webm') t = 'audio';
+			if (e === 'webm') t = 'audio';
 		}
 		return t;
 	}
@@ -2439,64 +3293,280 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		updateReplyBar();
 	}
 
-	function bindMessageReplyGestures(div, msg) {
+	function bindMessageReplyButton(div, msg) {
 		if (!div || !msg || isSystemMessage(msg)) return;
-		let pressTimer = null;
-		div.addEventListener('contextmenu', function (e) {
+		const wrap = document.createElement('div');
+		wrap.className = 'wa-msg-actions';
+
+		const replyBtn = document.createElement('button');
+		replyBtn.type = 'button';
+		replyBtn.className = 'wa-msg-reply-btn';
+		replyBtn.title = 'Ответить';
+		replyBtn.setAttribute('aria-label', 'Ответить');
+		replyBtn.textContent = '↩';
+		replyBtn.addEventListener('click', function (e) {
 			e.preventDefault();
+			e.stopPropagation();
 			setReplyTo(msg);
 		});
-		div.addEventListener('touchstart', function () {
-			pressTimer = setTimeout(function () {
-				pressTimer = null;
-				setReplyTo(msg);
-			}, 480);
-		}, { passive: true });
-		div.addEventListener('touchend', function () {
-			if (pressTimer) {
-				clearTimeout(pressTimer);
-				pressTimer = null;
-			}
+
+		const fwdBtn = document.createElement('button');
+		fwdBtn.type = 'button';
+		fwdBtn.className = 'wa-msg-fwd-btn';
+		fwdBtn.title = 'Переслать';
+		fwdBtn.setAttribute('aria-label', 'Переслать');
+		fwdBtn.textContent = '↗';
+		fwdBtn.addEventListener('click', function (e) {
+			e.preventDefault();
+			e.stopPropagation();
+			openForwardPicker(msg);
 		});
-		div.addEventListener('touchmove', function () {
-			if (pressTimer) {
-				clearTimeout(pressTimer);
-				pressTimer = null;
-			}
+
+		wrap.appendChild(replyBtn);
+		wrap.appendChild(fwdBtn);
+		div.appendChild(wrap);
+	}
+
+	function forwardPlainText(msg) {
+		let t = stripConnectorPrefix(messageRawText(msg));
+		t = t.replace(/\[(?:DISK\s+)?FILE\s+ID=(?:n)?\d+\]/gi, '');
+		t = t.replace(/\[br\]/gi, '\n').replace(/<br\s*\/?>/gi, '\n');
+		t = t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+		return t;
+	}
+
+	function getForwardCandidates(query) {
+		const q = (query || '').trim();
+		let items = mergeChatLists(chatsCache || [], forwardRemoteChats || []);
+		if (!q) {
+			items = items.filter(function (c) {
+				return !isChatClosed(c) || isPinnedCrmChat(c);
+			});
+		} else {
+			items = items.filter(function (c) { return matchesChatSearch(c, q); });
+		}
+		const cur = currentDialogId;
+		items = items.filter(function (c) { return resolveDialogId(c) !== cur; });
+		items = dedupeChatsByPhone(items);
+		return sortChatsDesc(items).slice(0, 80);
+	}
+
+	function setForwardSearchLoading(flag) {
+		forwardSearchLoading = !!flag;
+		if (fwdListEl) {
+			fwdListEl.classList.toggle('wa-list-searching', forwardSearchLoading);
+		}
+	}
+
+	function updateFwdSendState() {
+		if (!fwdGoBtn) return;
+		fwdGoBtn.disabled = !forwardMsg || forwardSelected.size === 0;
+		const n = forwardSelected.size;
+		if (fwdTitleEl) {
+			fwdTitleEl.textContent = n ? ('Переслать · ' + n) : 'Переслать';
+		}
+	}
+
+	function renderForwardList() {
+		if (!fwdListEl) return;
+		const items = getForwardCandidates(forwardSearchQuery);
+		fwdListEl.innerHTML = '';
+		if (!items.length) {
+			const msg = forwardSearchLoading ? 'Ищем чаты…' : 'Ничего не найдено';
+			fwdListEl.innerHTML = '<div class="wa-fwd-item" style="justify-content:center;color:#667781;">' + msg + '</div>';
+			return;
+		}
+		items.forEach(function (chat) {
+			const did = resolveDialogId(chat);
+			const av = getAvatarData(chat);
+			const phone = getPrimaryPhone(chat);
+			const sub = phone ? formatPhoneDisplay(phone) : (isChatClosed(chat) ? 'завершён' : '');
+			const row = document.createElement('div');
+			row.className = 'wa-fwd-item' + (forwardSelected.has(did) ? ' on' : '');
+			row.innerHTML =
+				avatarHtml(av) +
+				'<div class="wa-fwd-meta">' +
+					'<div class="wa-fwd-name">' + BX.util.htmlspecialchars(av.title) + '</div>' +
+					(sub ? '<div class="wa-fwd-sub">' + BX.util.htmlspecialchars(sub) + '</div>' : '') +
+				'</div>' +
+				'<div class="wa-fwd-check">' + (forwardSelected.has(did) ? '✓' : '') + '</div>';
+			row.addEventListener('click', function () {
+				if (forwardSelected.has(did)) forwardSelected.delete(did);
+				else forwardSelected.add(did);
+				renderForwardList();
+				updateFwdSendState();
+			});
+			fwdListEl.appendChild(row);
 		});
-		div.title = 'Правый клик / долгое нажатие — ответить';
+	}
+
+	function closeForwardPicker() {
+		forwardMsg = null;
+		forwardSelected = new Set();
+		forwardSearchQuery = '';
+		forwardRemoteChats = [];
+		setForwardSearchLoading(false);
+		if (fwdSearchEl) fwdSearchEl.value = '';
+		if (fwdEl) fwdEl.classList.remove('open');
+		updateFwdSendState();
+	}
+
+	function openForwardPicker(msg) {
+		if (!msg || isSystemMessage(msg)) return;
+		forwardMsg = msg;
+		forwardSelected = new Set();
+		forwardSearchQuery = '';
+		forwardRemoteChats = [];
+		setForwardSearchLoading(false);
+		if (fwdSearchEl) fwdSearchEl.value = '';
+		if (fwdPreviewEl) {
+			const preview = getReplyPreviewText(msg);
+			fwdPreviewEl.textContent = preview || '[медиа]';
+		}
+		renderForwardList();
+		updateFwdSendState();
+		if (fwdEl) fwdEl.classList.add('open');
+		setTimeout(function () {
+			if (fwdSearchEl) fwdSearchEl.focus();
+		}, 50);
+	}
+
+	async function ensureChatCanReceive(chat) {
+		const chatId = parseInt(chat.chat_id || (chat.chat && chat.chat.id), 10);
+		if (!chatId) return;
+		if (isChatClosed(chat)) {
+			await rest('imopenlines.session.start', { CHAT_ID: chatId });
+			try {
+				await rest('imopenlines.operator.answer', { CHAT_ID: chatId });
+			} catch (e) { /* already taken */ }
+			if (!chat.lines) chat.lines = {};
+			chat.lines.status = 20;
+			chat._waClosed = false;
+			return;
+		}
+		const st = getChatLineStatus(chat);
+		if ([0, 5, 10].indexOf(st) !== -1 || isNaN(st)) {
+			try {
+				await rest('imopenlines.operator.answer', { CHAT_ID: chatId });
+			} catch (e) { /* ignore */ }
+		}
+	}
+
+	function guessFwdFileName(fileId, blob) {
+		const f = filesMap[fileId] || {};
+		let name = String(f.name || '').trim();
+		if (name && !/^file\.\d+$/i.test(name) && !/^\d+$/.test(name) && name.indexOf('.') !== -1) {
+			return name;
+		}
+		let ext = String(f.extension || '').replace(/^\./, '');
+		if (!ext && blob && blob.type) {
+			const mime = String(blob.type).toLowerCase();
+			if (mime.indexOf('ogg') !== -1) ext = 'ogg';
+			else if (mime.indexOf('jpeg') !== -1) ext = 'jpg';
+			else if (mime.indexOf('png') !== -1) ext = 'png';
+			else if (mime.indexOf('mp4') !== -1) ext = 'mp4';
+			else if (mime.indexOf('webm') !== -1) ext = 'webm';
+			else if (mime.indexOf('pdf') !== -1) ext = 'pdf';
+		}
+		if (!ext) {
+			if (isAudioMediaFile(f)) ext = 'ogg';
+			else if (isImageFileRecord(f)) ext = 'jpg';
+			else ext = 'bin';
+		}
+		return 'fwd_' + fileId + '.' + ext;
+	}
+
+	async function blobFileFromChatMedia(fileId) {
+		const url = waMediaProxyUrl(fileId);
+		const resp = await fetch(url, { credentials: 'same-origin' });
+		if (!resp.ok) throw new Error('Не скачался файл #' + fileId);
+		const blob = await resp.blob();
+		const name = guessFwdFileName(fileId, blob);
+		const type = blob.type || 'application/octet-stream';
+		return new File([blob], name, { type: type });
+	}
+
+	async function sendForwardToChat(chat, msg) {
+		await ensureChatCanReceive(chat);
+		const dialogId = resolveDialogId(chat);
+		const text = forwardPlainText(msg);
+		const fileIds = getFileIds(msg);
+		if (fileIds.length) {
+			for (let i = 0; i < fileIds.length; i++) {
+				const file = await blobFileFromChatMedia(fileIds[i]);
+				const caption = (i === 0) ? text : '';
+				await uploadViaDiskCommit(file, caption, true, chat);
+			}
+			return;
+		}
+		if (!text) throw new Error('Пустое сообщение');
+		await rest('im.message.add', { DIALOG_ID: dialogId, MESSAGE: text });
+	}
+
+	async function confirmForward() {
+		if (!forwardMsg || !forwardSelected.size || sending) return;
+		const targets = [];
+		forwardSelected.forEach(function (did) {
+			const chat = (chatsCache || []).find(function (c) { return resolveDialogId(c) === did; });
+			if (chat) targets.push(chat);
+		});
+		if (!targets.length) return;
+
+		sending = true;
+		if (fwdGoBtn) fwdGoBtn.disabled = true;
+		const errors = [];
+		try {
+			for (let i = 0; i < targets.length; i++) {
+				if (fwdTitleEl) fwdTitleEl.textContent = 'Отправка ' + (i + 1) + '/' + targets.length + '…';
+				try {
+					await sendForwardToChat(targets[i], forwardMsg);
+				} catch (e) {
+					const name = getAvatarData(targets[i]).title;
+					errors.push(name + ': ' + (e && (e.ex && e.ex.error_description || e.error_description || e.message) || e));
+				}
+			}
+			closeForwardPicker();
+			loadChatList();
+			if (errors.length) {
+				alert('Переслано с ошибками:\n' + errors.join('\n'));
+			}
+		} finally {
+			sending = false;
+			updateFwdSendState();
+		}
 	}
 
 	function hydrateFilesFromMessages(messages) {
 		(messages || []).forEach(function (msg) {
 			const p = msgParams(msg);
 			const viewer = p.viewerAttrs || p.viewerattrs || {};
-			const id = parseFileId(
-				p.objectId || p.objectid || p.FILE_ID || p.fileId ||
-				viewer.objectId || viewer.objectid
-			);
-			const src = pickFirstUrl(p.src, p.SRC, viewer.src);
+			const ids = getFileIds(msg);
+			if (!ids.length) return;
+			const src = pickFirstUrl(p.src, p.SRC, viewer.src, viewer.viewerSrc);
 			const media = msg.mediaUrl || msg.mediaurl || {};
 			const preview = mediaPreviewUrl(media);
-			if (!id && !src && !preview) return;
-			const fid = id || parseFileId(viewer.objectId) || 0;
-			if (!fid) return;
-			const name = p.title || viewer.title || (msg.text || '').trim() || ('file.' + fid);
-			const ext = String(name.split('.').pop() || '').toLowerCase();
-			let type = normalizeMediaKind(viewer.viewertype || viewer.viewerType || '', ext, name);
+			const name = p.title || viewer.title || viewer.viewerTitle || '';
+			const extFromName = name ? String(name.split('.').pop() || '').toLowerCase() : '';
+			let type = normalizeMediaKind(
+				viewer.viewertype || viewer.viewerType || p.FILE_TYPE || p.fileType || '',
+				extFromName,
+				name
+			);
 			if (msg.isVoiceNote || msg.isvoicenote) type = 'audio';
 			if (msg.isVideoNote || msg.isvideonote) type = 'video';
-			if (!type && (src || preview)) type = 'image';
-			const prev = filesMap[fid] || { id: fid };
-			filesMap[fid] = Object.assign(prev, {
-				id: fid,
-				name: prev.name || name,
-				extension: prev.extension || ext,
-				type: prev.type || type,
-				urlPreview: prev.urlPreview || absolutizePortalUrl(preview || src),
-				urlShow: prev.urlShow || absolutizePortalUrl(src || preview),
-				urlDownload: prev.urlDownload || absolutizePortalUrl(src || preview),
-				isVoiceNote: prev.isVoiceNote || !!(msg.isVoiceNote || msg.isvoicenote)
+			ids.forEach(function (fid) {
+				const prev = filesMap[fid] || { id: fid };
+				const mergedType = (type === 'audio' || type === 'video') ? type : (prev.type || type);
+				filesMap[fid] = Object.assign(prev, {
+					id: fid,
+					name: prev.name || name || prev.name,
+					extension: prev.extension || extFromName,
+					type: mergedType,
+					urlPreview: prev.urlPreview || absolutizePortalUrl(preview || src),
+					urlShow: prev.urlShow || absolutizePortalUrl(src || preview),
+					urlDownload: prev.urlDownload || absolutizePortalUrl(src || preview),
+					isVoiceNote: prev.isVoiceNote || !!(msg.isVoiceNote || msg.isvoicenote)
+				});
 			});
 		});
 	}
@@ -2540,12 +3610,16 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function isImageFileRecord(f) {
-		if (!f) return false;
-		const type = normalizeMediaKind(f.type, f.extension, f.name);
-		const ext = (f.extension || '').toLowerCase();
+		if (!f || isAudioMediaFile(f)) return false;
+		const ext = (f.extension || '').toLowerCase().replace(/^\./, '');
 		const name = (f.name || '').toLowerCase();
-		return type === 'image' || /^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(ext) ||
-			/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(name);
+		if (/^(jpe?g|png|gif|webp|bmp|heic|heif)$/i.test(ext) ||
+			/\.(jpe?g|png|gif|webp|bmp|heic|heif)(\?|$)/i.test(name)) {
+			return true;
+		}
+		const preview = String(f.urlPreview || '');
+		return (f.type === 'image' || normalizeMediaKind(f.type, f.extension, f.name) === 'image') &&
+			preview && preview.indexOf('wa_media=') === -1;
 	}
 
 	async function prefetchFileUrls(fileIds) {
@@ -2913,9 +3987,6 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	function getChatPhones(chat) {
 		const phones = new Set();
 
-		extractPhoneDigitsFromText(chat.title).forEach(p => phones.add(p));
-		extractPhoneDigitsFromText(chat.chat && chat.chat.name).forEach(p => phones.add(p));
-
 		const userPhones = chat.user && chat.user.phones;
 		if (userPhones && typeof userPhones === 'object') {
 			Object.keys(userPhones).forEach(key => {
@@ -2923,7 +3994,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			});
 		}
 
-		const entityId = (chat.chat && chat.chat.entity_id) || '';
+		const entityId = (chat.chat && chat.chat.entity_id) || chat.entity_id || '';
 		if (entityId) {
 			entityId.split('|').forEach(part => {
 				extractPhoneDigitsFromText(part.replace(/@.+$/i, '')).forEach(p => phones.add(p));
@@ -2942,7 +4013,74 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			if (val) extractPhoneDigitsFromText(val).forEach(p => phones.add(p));
 		});
 
+		extractPhoneDigitsFromText(chat.title).forEach(p => phones.add(p));
+		extractPhoneDigitsFromText(chat.chat && chat.chat.name).forEach(p => phones.add(p));
+
 		return Array.from(phones);
+	}
+
+	function extractWaClientPhones(entityId) {
+		const out = [];
+		if (!entityId) return out;
+		String(entityId).split('|').forEach(function (part) {
+			part = String(part || '').trim();
+			const m = part.match(/^(\d{10,15})@(?:c\.us|s\.whatsapp\.net)$/i);
+			if (m) out.push(normalizePhoneDigits(m[1]));
+		});
+		return out;
+	}
+
+	function getClientPhone(chat) {
+		if (!chat) return '';
+		if (chat._clientPhone) return chat._clientPhone;
+
+		const entityId = (chat.chat && chat.chat.entity_id) || chat.entity_id || '';
+		const waPhones = extractWaClientPhones(entityId);
+		if (waPhones.length) {
+			chat._clientPhone = waPhones[0];
+			return chat._clientPhone;
+		}
+
+		const waFromHelper = getChatWaPhones(chat);
+		if (waFromHelper.length) {
+			chat._clientPhone = buildWaPhoneDigits(waFromHelper[0]);
+			if (chat._clientPhone.length >= 10) return chat._clientPhone;
+		}
+
+		const clientUser = getChatClientUser(chat);
+		if (clientUser && clientUser.phones && typeof clientUser.phones === 'object') {
+			const vals = Object.values(clientUser.phones);
+			for (let i = 0; i < vals.length; i++) {
+				const d = normalizePhoneDigits(vals[i]);
+				if (d.length >= 10) {
+					chat._clientPhone = d;
+					return d;
+				}
+			}
+		}
+
+		const parts = String(entityId).split('|');
+		if (parts.length >= 4) {
+			for (let i = 2; i < parts.length; i++) {
+				const d = normalizePhoneDigits(String(parts[i]).replace(/@.+$/i, ''));
+				if (d.length >= 10) {
+					chat._clientPhone = d;
+					return d;
+				}
+			}
+		}
+
+		const all = getChatPhones(chat);
+		const linePart = normalizePhoneDigits(String(parts[1] || ''));
+		for (let j = 0; j < all.length; j++) {
+			if (linePart && all[j].slice(-10) === linePart.slice(-10)) continue;
+			if (all[j].length >= 10) {
+				chat._clientPhone = all[j];
+				return all[j];
+			}
+		}
+		chat._clientPhone = all.length ? all[all.length - 1] : '';
+		return chat._clientPhone;
 	}
 
 	function formatPhoneDisplay(digits) {
@@ -2975,13 +4113,14 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 
 		(chat._phones || getChatPhones(chat)).forEach(p => parts.push(p));
+		const clientPhone = getClientPhone(chat);
+		if (clientPhone) parts.push(clientPhone);
 
 		return normalizePhoneDigits(parts.filter(Boolean).join(' '));
 	}
 
 	function getPrimaryPhone(chat) {
-		const cached = chat._phones || getChatPhones(chat);
-		return cached.length ? cached[0] : '';
+		return getClientPhone(chat);
 	}
 
 	function matchesChatSearch(chat, query) {
@@ -3043,6 +4182,34 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (!id) return null;
 		if (olIdResolveCache.has(id)) return olIdResolveCache.get(id);
 		const pending = (async function () {
+			if (window.__WA_NOPROLOG) {
+				try {
+					const data = await rest('imopenlines.dialog.get', { CHAT_ID: id });
+					const d = data.result || data;
+					const lineStatus = parseInt(d.lines && d.lines.status, 10);
+					return {
+						rawId: id,
+						chatId: parseInt(d.id, 10) || id,
+						userCode: String(d.entity_id || ''),
+						title: String(d.name || d.title || ''),
+						closed: CLOSED_LINE_STATUSES.indexOf(lineStatus) !== -1
+					};
+				} catch (e1) {
+					try {
+						const data = await rest('imopenlines.dialog.get', { SESSION_ID: id });
+						const d = data.result || data;
+						const lineStatus = parseInt(d.lines && d.lines.status, 10);
+						return {
+							rawId: id,
+							chatId: parseInt(d.id, 10) || id,
+							userCode: String(d.entity_id || ''),
+							title: String(d.name || d.title || ''),
+							closed: CLOSED_LINE_STATUSES.indexOf(lineStatus) !== -1
+						};
+					} catch (e2) { /* ignore */ }
+				}
+				return { rawId: id, chatId: id, userCode: '', title: '', closed: false };
+			}
 			try {
 				const r = await fetch('/local/custom_chat/?wa_resolve_ol=' + id, { credentials: 'same-origin' });
 				if (!r.ok) return null;
@@ -3106,16 +4273,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		// На коробке CHAT_ID/SESSION_ID → 400; USER_CODE обычно ок
 		if (userCode) {
 			try {
-				const data = await rest('imopenlines.dialog.get', { USER_CODE: userCode });
-				const dialog = data.result || data;
-				const item = dialogToChatItem(dialog, null);
-				if (item) {
-					if (meta && meta.closed) {
-						item._waClosed = true;
-						if (!item.lines) item.lines = { status: 50 };
+				const cid = await resolveChatIdByUserCode(userCode);
+				if (cid) {
+					const item = chatItemFromResolvedMeta(Object.assign({}, meta || {}, { chatId: cid }), { closed: !!(meta && meta.closed) });
+					if (item) {
+						item._phones = getChatPhones(item);
+						return item;
 					}
-					item._phones = getChatPhones(item);
-					return item;
 				}
 			} catch (e) { /* synthetic below */ }
 		}
@@ -3237,18 +4401,42 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 
 		try {
-			const data = await rest('imopenlines.dialog.get', { USER_CODE: userCode });
-			const dialog = data.result || data;
-			const cid = parseInt(dialog.id, 10);
+			const cid = await resolveChatIdByUserCode(userCode);
 			if (cid) chatIds.add(cid);
 		} catch (e) {
 			failedPhoneLookups.add(qDigits);
 		}
 	}
 
+	async function ensureSearchRecentCache() {
+		if (searchRecentLoaded) return;
+		try {
+			for (let offset = 0; offset < 250; offset += 50) {
+				const data = await rest('im.recent.list', {
+					LIMIT: 50,
+					OFFSET: offset,
+					ONLY_OPENLINES: 'Y'
+				});
+				const items = data.items || (data.result && data.result.items) || data.result || [];
+				if (!Array.isArray(items) || !items.length) break;
+				chatsCache = mergeChatLists(chatsCache, items).map(function (chat) {
+					if (!chat._phones) chat._phones = getChatPhones(chat);
+					if (isChatClosed(chat)) markChatClosed(chat);
+					return chat;
+				});
+				if (items.length < 50) break;
+			}
+		} catch (e) {
+			console.warn('search recent cache', e);
+		}
+		searchRecentLoaded = true;
+	}
+
 	async function searchChatsByPhoneRemote(query) {
 		const qDigits = normalizePhoneDigits(query);
 		if (qDigits.length < 10) return [];
+
+		await ensureSearchRecentCache();
 
 		const chatIds = new Set();
 		const phoneValues = buildPhoneLookupValues(qDigits);
@@ -3260,7 +4448,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 			for (let t = 0; t < types.length; t++) {
 				const ids = dupData[types[t]] || [];
-				for (let i = 0; i < ids.length && i < 8; i++) {
+				for (let i = 0; i < ids.length && i < 12; i++) {
 					await collectChatIdsForCrmEntity(types[t], ids[i], chatIds);
 				}
 			}
@@ -3268,16 +4456,25 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			console.warn('crm.duplicate.findbycomm', e);
 		}
 
-		if (!chatIds.size) {
-			await findChatByPhoneUserCode(qDigits, chatIds);
-		}
+		await findChatsByPhonesAnyLine([qDigits], chatIds);
+
+		(chatsCache || []).forEach(function (chat) {
+			if (!matchesChatSearch(chat, query)) return;
+			const cid = parseInt(chat.chat_id || (chat.chat && chat.chat.id), 10);
+			if (cid) chatIds.add(cid);
+		});
 
 		const found = [];
 		const ids = Array.from(chatIds);
 		for (let i = 0; i < ids.length; i++) {
 			try {
 				const item = await chatItemFromDialogChatId(ids[i]);
-				if (item && matchesChatSearch(item, query)) found.push(item);
+				if (!item) continue;
+				item._phones = getChatPhones(item);
+				if (matchesChatSearch(item, query) || chatItemMatchesPhones(item, [qDigits])) {
+					item._fromSearch = true;
+					found.push(item);
+				}
 			} catch (e) {
 				console.warn('dialog.get CHAT_ID=' + ids[i], e);
 			}
@@ -3358,24 +4555,26 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const q = (searchQuery || '').trim();
 		if (q.length < 2) return;
 
-		if (getLocalSearchMatches().length > 0) return;
-
 		const qDigits = normalizePhoneDigits(q);
 		const isPhoneSearch = qDigits.length >= 10;
+		if (!isPhoneSearch && getLocalSearchMatches().length > 0) return;
+
 		const searchKey = isPhoneSearch ? qDigits : q.toLowerCase();
 		if (searchRemoteLoading && lastRemoteSearchKey === searchKey) return;
 
 		lastRemoteSearchKey = searchKey;
 		searchRemoteLoading = true;
-		listEl.innerHTML = '<div class="wa-chat-item" style="justify-content:center;color:#667781;padding:24px 14px;">Поиск...</div>';
+		listEl.classList.add('wa-list-searching');
 
 		try {
 			const remote = isPhoneSearch
 				? await searchChatsByPhoneRemote(q)
 				: await searchChatsByNameRemote(q);
 			if (remote.length) {
+				remote.forEach(function (item) { item._fromSearch = true; });
 				chatsCache = mergeChatLists(chatsCache, remote).map(function (chat) {
 					if (!chat._phones) chat._phones = getChatPhones(chat);
+					delete chat._clientPhone;
 					if (isChatClosed(chat)) markChatClosed(chat);
 					return chat;
 				});
@@ -3385,6 +4584,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			console.error(e);
 		} finally {
 			searchRemoteLoading = false;
+			listEl.classList.remove('wa-list-searching');
 			renderChatList();
 		}
 	}
@@ -3392,13 +4592,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	function isAudioMediaFile(f) {
 		if (!f) return false;
 		const type = normalizeMediaKind(f.type, f.extension, f.name);
-		const ext = (f.extension || '').toLowerCase();
+		const ext = (f.extension || '').toLowerCase().replace(/^\./, '');
 		const name = (f.name || '').toLowerCase();
 
-		if (f.isVoiceNote) return true;
+		if (f.isVoiceNote || f._kind === 'audio') return true;
 		if (type === 'audio') return true;
 		if (/^(mp3|ogg|oga|wav|m4a|opus|aac)$/i.test(ext)) return true;
-		if (/voice|audio_message|голос/i.test(name)) return true;
+		if (/voice|audio_message|голос|\bptt\b/i.test(name)) return true;
 		if (ext === 'webm' && type !== 'video') return true;
 
 		return false;
@@ -3406,32 +4606,158 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function isVideoMediaFile(f) {
 		if (!f || isAudioMediaFile(f)) return false;
+		if (f._kind === 'video') return true;
 		const type = normalizeMediaKind(f.type, f.extension, f.name);
-		const ext = (f.extension || '').toLowerCase();
+		const ext = (f.extension || '').toLowerCase().replace(/^\./, '');
 		return type === 'video' || /^(mp4|mov|avi|mkv)$/i.test(ext);
 	}
 
 	function waMediaProxyUrl(fileId) {
 		const id = parseFileId(fileId);
 		if (!id) return '';
-		const url = new URL(window.location.href);
-		url.search = '';
-		url.hash = '';
+		/* Как раньше: тот же URL страницы (cookies/сессия). mobile.php — только для noprolog + wa_aid. */
+		let url;
+		if (window.__WA_NOPROLOG) {
+			const entry = 'mobile.php';
+			const base = window.location.pathname.replace(/[^/]+$/, '') + entry;
+			url = new URL(base, window.location.origin);
+		} else {
+			url = new URL(window.location.href);
+			url.search = '';
+			url.hash = '';
+		}
 		url.searchParams.set('wa_media', String(id));
 		const chatId = currentChatId || String(currentDialogId || '').replace(/^chat/i, '');
 		if (chatId && /^\d+$/.test(String(chatId))) {
 			url.searchParams.set('chat', String(chatId));
 		}
+		if (window.__WA_AID && window.__WA_NOPROLOG) {
+			url.searchParams.set('wa_aid', window.__WA_AID);
+		}
 		return url.toString();
+	}
+
+	function waMediaKindUrl(fileId) {
+		const url = waMediaProxyUrl(fileId);
+		if (!url) return '';
+		const u = new URL(url);
+		u.searchParams.set('kind', '1');
+		return u.toString();
+	}
+
+	function formatAudioDuration(sec) {
+		sec = Math.round(Number(sec) || 0);
+		if (sec < 0) sec = 0;
+		const m = Math.floor(sec / 60);
+		const s = sec % 60;
+		return m + ':' + String(s).padStart(2, '0');
+	}
+
+	function setAudioDurationLabel(audio, sec) {
+		if (!audio || !(sec > 0) || !isFinite(sec)) return;
+		const wrap = audio.closest('.wa-media');
+		const label = wrap && wrap.querySelector('.wa-audio-dur');
+		if (label) {
+			label.textContent = formatAudioDuration(sec);
+			label.hidden = false;
+		}
+	}
+
+	function bindAudioDuration(audio) {
+		if (!audio || audio.dataset.durBound === '1') return;
+		audio.dataset.durBound = '1';
+		const id = parseFileId(audio.dataset.fileId);
+
+		/* если прямой Bitrix URL не открылся — fallback на наш proxy (+mp3 на mobile) */
+		audio.addEventListener('error', function onAudioErr() {
+			if (audio.dataset.proxyTried === '1') return;
+			const proxy = audio.dataset.proxy || waMediaProxyUrl(id);
+			if (!proxy || audio.src === proxy) return;
+			audio.dataset.proxyTried = '1';
+			let next = proxy;
+			if (waCcIsMobileClient()) {
+				try {
+					const u = new URL(proxy);
+					u.searchParams.set('fmt', 'mp3');
+					next = u.toString();
+				} catch (e) { /* keep proxy */ }
+			}
+			audio.src = next;
+			try { audio.load(); } catch (e) { /* ignore */ }
+		});
+
+		function applyKnown() {
+			const f = filesMap[id] || {};
+			if (f.duration > 0) {
+				setAudioDurationLabel(audio, f.duration);
+				return true;
+			}
+			return false;
+		}
+
+		function fromElement() {
+			const d = audio.duration;
+			if (isFinite(d) && d > 0) {
+				const f = filesMap[id] || { id: id };
+				f.duration = d;
+				filesMap[id] = f;
+				setAudioDurationLabel(audio, d);
+				return true;
+			}
+			return false;
+		}
+
+		if (applyKnown() || fromElement()) return;
+
+		audio.addEventListener('loadedmetadata', function () {
+			if (fromElement()) return;
+			if (audio.duration === Infinity || isNaN(audio.duration)) {
+				try { audio.currentTime = 1e101; } catch (e) {}
+			}
+		});
+		audio.addEventListener('durationchange', fromElement);
+		audio.addEventListener('timeupdate', function onTu() {
+			if (!fromElement()) return;
+			audio.removeEventListener('timeupdate', onTu);
+			try { if (audio.currentTime > 1) audio.currentTime = 0; } catch (e) {}
+		});
+
+		if (id && !(filesMap[id] && filesMap[id].duration > 0)) {
+			fetch(waMediaKindUrl(id), { credentials: 'same-origin' }).then(function (resp) {
+				return resp.json();
+			}).then(function (data) {
+				const dur = data && Number(data.duration);
+				if (dur > 0) {
+					const f = filesMap[id] || { id: id };
+					f.duration = dur;
+					filesMap[id] = f;
+					applyKnown();
+				}
+			}).catch(function () {});
+		}
 	}
 
 	function mediaElementHtml(fileId, tag, extraClass) {
 		const f = filesMap[fileId] || {};
+		/* Как вчера: сначала прямые Bitrix urlShow/urlDownload, proxy только fallback */
 		const direct = f.urlShow || f.urlDownload || f.urlPreview || waMediaProxyUrl(fileId);
+		if (tag === 'audio') {
+			const known = filesMap[fileId] && filesMap[fileId].duration > 0
+				? formatAudioDuration(filesMap[fileId].duration)
+				: '';
+			return '<div class="wa-media wa-media-audio">' +
+				'<audio controls preload="metadata" playsinline webkit-playsinline class="' + (extraClass || '') + '" ' +
+				'src="' + BX.util.htmlspecialchars(direct) + '" ' +
+				'data-file-id="' + fileId + '" ' +
+				'data-proxy="' + BX.util.htmlspecialchars(waMediaProxyUrl(fileId)) + '"></audio>' +
+				'<span class="wa-audio-dur"' + (known ? '' : ' hidden') + '>' + known + '</span>' +
+				'</div>';
+		}
 		return '<div class="wa-media">' +
-			'<' + tag + ' controls preload="metadata" class="' + (extraClass || '') + '" ' +
+			'<' + tag + ' controls preload="metadata" playsinline class="' + (extraClass || '') + '" ' +
 			'src="' + BX.util.htmlspecialchars(direct) + '" ' +
-			'data-file-id="' + fileId + '"></' + tag + '>' +
+			'data-file-id="' + fileId + '" ' +
+			'data-proxy="' + BX.util.htmlspecialchars(waMediaProxyUrl(fileId)) + '"></' + tag + '>' +
 			'</div>';
 	}
 
@@ -3439,55 +4765,308 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const name = BX.util.htmlspecialchars((f && f.name) || ('фото #' + id));
 		const proxy = waMediaProxyUrl(id);
 		const preview = (f && (f.urlPreview || f.urlShow || f.urlDownload)) || proxy;
-		const show = (f && (f.urlShow || f.urlDownload || f.urlPreview)) || proxy;
-		const download = (f && (f.urlDownload || f.urlShow || f.urlPreview)) || proxy;
+		const full = (f && (f.urlShow || f.urlDownload || f.urlPreview)) || proxy;
 		return '<div class="wa-media"><img class="wa-lightbox-trigger" src="' + BX.util.htmlspecialchars(preview) +
-			'" data-full="' + BX.util.htmlspecialchars(show) +
-			'" data-download="' + BX.util.htmlspecialchars(download) +
+			'" data-full="' + BX.util.htmlspecialchars(full) +
+			'" data-download="' + BX.util.htmlspecialchars(full) +
 			'" data-proxy="' + BX.util.htmlspecialchars(proxy) +
 			'" data-file-id="' + id + '" alt="' + name + '" loading="lazy"></div>';
+	}
+
+	function renderUnknownMediaHtml(id) {
+		return '<div class="wa-media wa-media-unknown" data-file-id="' + id + '">' +
+			'<div class="wa-media-loading">медиа...</div></div>';
+	}
+
+	function renderFileLinkHtml(id, f) {
+		const name = BX.util.htmlspecialchars((f && f.name) || ('файл #' + id));
+		const href = waMediaProxyUrl(id);
+		return '<div class="wa-media"><a class="wa-file-link" href="' + BX.util.htmlspecialchars(href) +
+			'" target="_blank" rel="noopener" data-file-id="' + id + '">📎 ' + name + '</a></div>';
+	}
+
+	function isDocumentFile(f) {
+		const ext = String((f && f.extension) || '').toLowerCase().replace(/^\./, '');
+		const name = String((f && f.name) || '').toLowerCase();
+		return /^(pdf|docx?|xlsx?|pptx?|zip|rar|7z|txt|csv|rtf)$/i.test(ext) ||
+			/\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z|txt|csv|rtf)(\?|$)/i.test(name);
+	}
+
+	function applyProbedKind(id, kind, extra) {
+		const prev = filesMap[id] || { id: id };
+		const name = (extra && extra.name) || prev.name;
+		const ext = (extra && extra.ext) || prev.extension;
+		filesMap[id] = Object.assign(prev, {
+			id: id,
+			type: kind || prev.type,
+			_kind: kind,
+			name: name,
+			extension: ext,
+			duration: (extra && extra.duration > 0) ? extra.duration : prev.duration
+		});
+		if (kind === 'file' && isAudioMediaFile(filesMap[id])) {
+			filesMap[id].type = 'audio';
+			filesMap[id]._kind = 'audio';
+			return 'audio';
+		}
+		return kind;
+	}
+
+	async function probeMediaKind(fileId) {
+		const id = parseFileId(fileId);
+		if (!id) return 'file';
+		const f = filesMap[id] || {};
+		if (f._kind === 'audio' || f._kind === 'video' || f._kind === 'image') return f._kind;
+		if (isAudioMediaFile(f)) { applyProbedKind(id, 'audio'); return 'audio'; }
+		if (isVideoMediaFile(f)) { applyProbedKind(id, 'video'); return 'video'; }
+		if (isImageFileRecord(f)) { applyProbedKind(id, 'image'); return 'image'; }
+		if (isDocumentFile(f)) { applyProbedKind(id, 'file'); return 'file'; }
+
+		try {
+			const resp = await fetch(waMediaKindUrl(id), { credentials: 'same-origin' });
+			const ct = (resp.headers.get('content-type') || '').toLowerCase();
+			if (ct.indexOf('json') === -1) {
+				applyProbedKind(id, 'audio');
+				return 'audio';
+			}
+			const data = await resp.json();
+			let kind = (data && data.kind) || 'file';
+			kind = applyProbedKind(id, kind, data) || kind;
+			if (kind === 'file' && !isDocumentFile(filesMap[id])) {
+				applyProbedKind(id, 'audio', data);
+				return 'audio';
+			}
+			return kind;
+		} catch (e) {
+			applyProbedKind(id, 'audio');
+			return 'audio';
+		}
+	}
+
+	function bindImageLightbox(img) {
+		if (!img || img.dataset.lbBound === '1') return;
+		img.dataset.lbBound = '1';
+		img.addEventListener('click', function (e) {
+			e.preventDefault();
+			openLightbox(img.dataset.full || img.src, img.dataset.download || img.dataset.full || img.src);
+		});
+	}
+
+	function fillMediaContainer(container, id, kind) {
+		if (!container) return;
+		const f = filesMap[id] || { id: id };
+		let html = '';
+		if (kind === 'audio') html = mediaElementHtml(id, 'audio', 'wa-voice');
+		else if (kind === 'video') html = mediaElementHtml(id, 'video');
+		else if (kind === 'image') html = renderImageHtml(id, f);
+		else html = renderFileLinkHtml(id, f);
+		const tmp = document.createElement('div');
+		tmp.innerHTML = html;
+		const next = tmp.firstElementChild;
+		if (next) {
+			container.replaceWith(next);
+			next.querySelectorAll('img.wa-lightbox-trigger').forEach(bindImageLightbox);
+			next.querySelectorAll('audio').forEach(bindAudioDuration);
+			if (kind === 'audio') {
+				const msgEl = next.closest('.wa-msg');
+				if (msgEl) msgEl.classList.add('has-audio');
+			}
+		} else {
+			container.innerHTML = html;
+		}
 	}
 
 	function renderFilesHtml(msg) {
 		const ids = getFileIds(msg);
 		if (!ids.length) return '';
+		const voiceMsg = !!(msg && (msg.isVoiceNote || msg.isvoicenote));
 		return ids.map(function (id) {
 			const f = filesMap[id] || { id: id };
+			if (voiceMsg) f.isVoiceNote = true;
 			if (isAudioMediaFile(f)) return mediaElementHtml(id, 'audio', 'wa-voice');
 			if (isVideoMediaFile(f)) return mediaElementHtml(id, 'video');
-			// WA/OL: type часто пустой или file.* — по умолчанию превью картинки
-			if (isImageFileRecord(f) || !f.type || f.type === 'file' || f.type === 'document') {
-				return renderImageHtml(id, f);
-			}
-			const name = BX.util.htmlspecialchars(f.name || ('файл #' + id));
-			const href = f.urlDownload || f.urlShow || f.urlPreview || waMediaProxyUrl(id);
-			return '<div class="wa-media"><a class="wa-file-link" href="' + BX.util.htmlspecialchars(href) +
-				'" target="_blank" rel="noopener" data-file-id="' + id + '">📎 ' + name + '</a></div>';
+			if (isImageFileRecord(f)) return renderImageHtml(id, f);
+			return renderUnknownMediaHtml(id);
 		}).join('');
 	}
 
 	async function resolveMediaUrl(fileId, directUrl) {
 		if (directUrl) return directUrl;
 		const id = parseFileId(fileId);
-		if (!id) return '';
 		const f = filesMap[id] || {};
-		return f.urlShow || f.urlDownload || f.urlPreview || waMediaProxyUrl(id);
+		return f.urlShow || f.urlDownload || f.urlPreview || waMediaProxyUrl(id) || '';
 	}
 
 	async function bindLazyMedia(root) {
 		const scope = root || messagesEl;
+		const unknowns = scope.querySelectorAll('.wa-media-unknown[data-file-id]');
+		unknowns.forEach(function (el) {
+			if (el.dataset.probing === '1') return;
+			el.dataset.probing = '1';
+			const id = parseFileId(el.dataset.fileId);
+			probeMediaKind(id).then(function (kind) {
+				fillMediaContainer(el, id, kind);
+			}).catch(function () {
+				fillMediaContainer(el, id, 'audio');
+			});
+		});
 		scope.querySelectorAll('img.wa-lightbox-trigger[data-proxy]').forEach(function (img) {
 			if (img.dataset.boundErr === '1') return;
 			img.dataset.boundErr = '1';
 			img.addEventListener('error', function () {
-				const proxy = img.dataset.proxy;
-				if (proxy && img.src !== proxy) {
+				const proxy = img.dataset.proxy || '';
+				if (proxy && img.dataset.proxyTried !== '1' && img.src !== proxy) {
+					img.dataset.proxyTried = '1';
 					img.src = proxy;
-					img.dataset.full = proxy;
-					img.dataset.download = proxy;
+					return;
 				}
+				if (img.dataset.kindTried === '1') return;
+				img.dataset.kindTried = '1';
+				const id = parseFileId(img.dataset.fileId);
+				const wrap = img.closest('.wa-media') || img.parentNode;
+				probeMediaKind(id).then(function (kind) {
+					if (kind === 'image') return;
+					fillMediaContainer(wrap, id, kind);
+				});
 			});
 		});
+		scope.querySelectorAll('audio[data-file-id]').forEach(bindAudioDuration);
+	}
+
+	function ticksSvgHtml(double) {
+		if (double) {
+			return '<svg viewBox="0 0 16 11" aria-hidden="true"><path fill="currentColor" d="M11.07 1.05 4.6 7.52 1.93 4.85.8 5.98l3.8 3.8 7.6-7.6z"/><path fill="currentColor" d="M14.53 1.05 8.06 7.52 7.2 6.66 6.07 7.79l1.99 1.99 7.6-7.6z"/></svg>';
+		}
+		return '<svg viewBox="0 0 16 11" aria-hidden="true"><path fill="currentColor" d="M12.2 1.05 5.73 7.52 3.06 4.85 1.93 5.98l3.8 3.8 7.6-7.6z"/></svg>';
+	}
+
+	function getOutgoingReadStatus(msg) {
+		if (!msg || isSystemMessage(msg) || !isOutgoingMessage(msg)) return '';
+		if (waChatTickStatus === 'read') return 'read';
+		const id = parseInt(msg.id, 10) || 0;
+		if (id && opponentReadMessageId && id <= opponentReadMessageId) return 'read';
+		if (waChatTickStatus === 'delivered' || waChatTickStatus === 'sent') return 'sent';
+		if (id) return 'sent';
+		return 'pending';
+	}
+
+	function getCurrentChatTickKeys() {
+		const chat = currentChatData;
+		if (!chat) return [];
+		const keys = [];
+		const groupKey = getWhatsAppGroupKey(chat);
+		if (groupKey) keys.push(groupKey);
+		const hay = getOlConnectorHaystack(chat);
+		const found = String(hay || '').match(/(\d{10,20}@c\.us|\d{5,20}(?:-\d{5,20})?@g\.us)/gi) || [];
+		found.forEach(function (v) { keys.push(v); });
+		const phone = getPrimaryPhone(chat);
+		if (phone) keys.push(phone);
+		(chat._phones || getChatPhones(chat) || []).forEach(function (p) {
+			if (p) keys.push(p);
+		});
+		return keys;
+	}
+
+	function getCurrentChatLineId() {
+		const chat = currentChatData;
+		if (!chat) return '';
+		const eid = String((chat.chat && chat.chat.entity_id) || chat.entity_id || '');
+		const parts = eid.split('|').filter(Boolean);
+		if (parts.length >= 2 && /^\d+$/.test(parts[1])) return parts[1];
+		return '';
+	}
+
+	function messageTicksHtml(msg) {
+		const status = getOutgoingReadStatus(msg);
+		if (!status) return '';
+		const read = status === 'read';
+		const label = read ? 'прочитано' : (status === 'pending' ? 'отправляется' : 'доставлено');
+		return '<span class="wa-ticks' + (read ? ' read' : '') + '" title="' + label + '" aria-label="' + label + '">' +
+			ticksSvgHtml(status !== 'pending') + '</span>';
+	}
+
+	function applyReadedList(list) {
+		if (!list) return;
+		if (!Array.isArray(list) && typeof list === 'object') {
+			list = Object.keys(list).map(function (k) {
+				const v = list[k] && typeof list[k] === 'object' ? list[k] : {};
+				return Object.assign({ user_id: k }, v);
+			});
+		}
+		if (!Array.isArray(list)) return;
+		let maxId = opponentReadMessageId || 0;
+		list.forEach(function (r) {
+			if (!r) return;
+			const uid = parseInt(r.user_id || r.userId, 10);
+			if (uid && uid === CURRENT_USER_ID) return;
+			const u = uid ? usersMap[uid] : null;
+			if (u && isStaffPortalUser(u)) return;
+			const mid = parseInt(r.message_id || r.messageId || r.last_id || r.lastId, 10) || 0;
+			if (mid > maxId) maxId = mid;
+		});
+		if (maxId > (opponentReadMessageId || 0)) opponentReadMessageId = maxId;
+	}
+
+	function updateOutgoingTicks() {
+		if (!messagesEl) return;
+		const read = waChatTickStatus === 'read' || opponentReadMessageId > 0;
+		messagesEl.querySelectorAll('.wa-msg.out').forEach(function (div) {
+			const id = parseInt(div.dataset.id, 10) || 0;
+			let el = div.querySelector('.wa-ticks');
+			const time = div.querySelector('.wa-msg-time');
+			if (!el && time) {
+				el = document.createElement('span');
+				el.className = 'wa-ticks';
+				el.innerHTML = ticksSvgHtml(true);
+				time.appendChild(el);
+			}
+			if (!el) return;
+			const isRead = read && (!id || !opponentReadMessageId || id <= opponentReadMessageId || waChatTickStatus === 'read');
+			el.classList.toggle('read', !!isRead);
+			el.title = isRead ? 'прочитано' : 'доставлено';
+			el.setAttribute('aria-label', el.title);
+		});
+	}
+
+	async function refreshReadReceipts() {
+		const keys = getCurrentChatTickKeys();
+		if (keys.length) {
+			try {
+				const entry = window.__WA_NOPROLOG ? 'mobile.php' : 'index.php';
+				const url = new URL(window.location.pathname.replace(/[^/]+$/, '') + entry, window.location.origin);
+				url.searchParams.set('wa_ticks', '1');
+				url.searchParams.set('keys', keys.join(','));
+				const lineId = getCurrentChatLineId();
+				if (lineId) url.searchParams.set('line', lineId);
+				if (window.__WA_AID && window.__WA_NOPROLOG) {
+					url.searchParams.set('wa_aid', window.__WA_AID);
+				}
+				const resp = await fetch(url.toString(), { credentials: 'same-origin' });
+				const data = await resp.json();
+				const st = String((data && data.status) || '').toLowerCase();
+				if (st === 'read' || st === 'delivered' || st === 'sent') {
+					waChatTickStatus = st;
+				}
+			} catch (e) {}
+		}
+		updateOutgoingTicks();
+	}
+
+	function handlePullRead(params) {
+		params = params || {};
+		if (currentDialogId && !pullMatchesCurrentChat(params)) return;
+		const uid = parseInt(params.userId || params.user_id || 0, 10);
+		if (uid && uid === CURRENT_USER_ID) return;
+		const u = uid ? usersMap[uid] : null;
+		if (u && isStaffPortalUser(u)) return;
+		const lastId = parseInt(
+			params.lastId || params.last_id || params.messageId || params.message_id || 0,
+			10
+		);
+		if (lastId > (opponentReadMessageId || 0)) {
+			opponentReadMessageId = lastId;
+			updateOutgoingTicks();
+		}
 	}
 
 	function renderMessage(msg) {
@@ -3515,7 +5094,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (!body) body = '<span class="wa-msg-text" style="color:#667781;font-style:italic">[медиа]</span>';
 		const msgDate = parseMessageDate(msg);
 		if (msgDate) {
-		 body += '<span class="wa-msg-time">' + formatTime(msgDate) + '</span>';
+			body += '<span class="wa-msg-time">' + formatTime(msgDate) + messageTicksHtml(msg) + '</span>';
 		}
 		div.innerHTML = body;
 
@@ -3536,7 +5115,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				else alert('Не удалось скачать файл');
 			});
 		});
-		bindMessageReplyGestures(div, msg);
+		bindMessageReplyButton(div, msg);
+		if (div.querySelector('.wa-media-audio') || div.querySelector('audio')) {
+			div.classList.add('has-audio');
+		}
 		return div;
 	}
 
@@ -3671,7 +5253,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			const av = getAvatarData(chat);
 			const title = av.title;
 			const preview = previewText(chat);
-			const phone = getPrimaryPhone(chat);
+			const isGroup = isWhatsAppGroupChat(chat);
+			const phone = isGroup ? '' : getPrimaryPhone(chat);
 			const phoneLabel = phone ? formatPhoneDisplay(phone) : '';
 			const titleHasPhone = phone && normalizePhoneDigits(title).indexOf(phone) !== -1;
 			const counter = parseInt(chat.counter || 0, 10);
@@ -3731,6 +5314,12 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			if (crmFocusDialogId) {
 				const pin = chatsCache.find(function (c) { return resolveDialogId(c) === crmFocusDialogId; });
 				if (pin) keep.push(pin);
+			}
+			if (searchQuery.trim()) {
+				const q = searchQuery;
+				chatsCache.forEach(function (c) {
+					if (c._fromSearch || matchesChatSearch(c, q)) keep.push(c);
+				});
 			}
 			chatsCache = mergeChatLists(keep, list).map(chat => {
 				chat._phones = getChatPhones(chat);
@@ -3829,21 +5418,32 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 	}
 
-	window.openDialog = async function (chatData) {
+	window.openDialog = async function (chatData, opts) {
+		opts = opts || {};
 		const dialogId = resolveDialogId(chatData);
 		if (!dialogId) return;
 
 		if (recording) await cancelRecording();
 		clearReplyTo();
 
+		// Клик по списку чатов — не тащим leadId из другой карточки / sessionStorage
+		if (!opts.keepPlacement) {
+			crmPlacementLeadId = 0;
+			crmPlacementDealId = 0;
+			crmContextLeadId = 0;
+			crmContextDealId = 0;
+		}
+
 		currentDialogId = dialogId;
 		currentChatId = chatData.chat_id || (chatData.chat && chatData.chat.id) || null;
-		restoreCrmContextForChat(currentChatId);
-		persistCrmContextForChat(currentChatId);
-		// UI загружает ONLY_OPENLINES — все чаты здесь открытые линии
+		if (opts.keepPlacement) {
+			persistCrmContextForChat(currentChatId);
+		}
 		currentChatIsOpenLine = true;
 		currentChatData = chatData;
-		applyCrmBindings(chatData, null);
+		opponentReadMessageId = 0;
+		waChatTickStatus = '';
+		await applyCrmBindings(chatData, null);
 
 		const av = getAvatarData(chatData);
 		titleEl.textContent = av.title;
@@ -3860,6 +5460,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		renderChatList();
 		await loadMessages(dialogId);
 		await refreshSessionState();
+		refreshReadReceipts().catch(function () {});
 		startChatPolling();
 	};
 
@@ -3882,30 +5483,27 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				? window.waCcParams()
 				: new URLSearchParams(window.location.search);
 			const boot = window.__WA_CC_BOOT || {};
-			// PHP уже выставил класс при app-include — не ломаем desktop-веткой без URL-флагов
-			if (document.body.classList.contains('wa-cc-mobile') || boot.mobile) {
+			const ua = navigator.userAgent || '';
+			const bitrixApp = /BitrixMobile|BXMobileApp|Bitrix24\.Mobile/i.test(ua);
+			const wide = !!(window.innerWidth >= 860 || (window.matchMedia && window.matchMedia('(min-width: 860px)').matches));
+
+			if (bitrixApp) {
 				document.body.classList.add('wa-cc-mobile');
 				document.body.classList.remove('wa-cc-desktop');
 				return;
 			}
-			if (sp.get('wa_mobile') === '1' || (boot && boot.mobile)) {
-				document.body.classList.add('wa-cc-mobile');
-				document.body.classList.remove('wa-cc-desktop');
-				return;
-			}
-			if (sp.get('wa_desktop') === '1') {
+			if (wide || sp.get('wa_desktop') === '1') {
 				document.body.classList.add('wa-cc-desktop');
 				document.body.classList.remove('wa-cc-mobile');
 				return;
 			}
-			// embed без флагов: desktop split (только если не mobile boot)
+			if (document.body.classList.contains('wa-cc-mobile') || boot.mobile || sp.get('wa_mobile') === '1') {
+				document.body.classList.add('wa-cc-mobile');
+				document.body.classList.remove('wa-cc-desktop');
+				return;
+			}
 			if (sp.get('wa_embed') === '1') {
-				if (boot && boot.mobile) {
-					document.body.classList.add('wa-cc-mobile');
-					document.body.classList.remove('wa-cc-desktop');
-				} else {
-					document.body.classList.add('wa-cc-desktop');
-				}
+				document.body.classList.add('wa-cc-desktop');
 				return;
 			}
 			if (window.matchMedia && window.matchMedia('(max-width: 720px)').matches) {
@@ -3938,6 +5536,174 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return result;
 	}
 
+	function waCcIsMobileClient() {
+		return !!(window.__WA_NOPROLOG
+			|| (window.__WA_CC_BOOT && window.__WA_CC_BOOT.mobile)
+			|| (document.body && document.body.classList.contains('wa-cc-mobile'))
+			|| /BitrixMobile|BXMobileApp|Bitrix24\.Mobile/i.test(navigator.userAgent || ''));
+	}
+
+	function getMobileCrmEntityPaths(type, id) {
+		const entityTypeId = type === 'lead' ? 1 : 2;
+		const typeName = type === 'lead' ? 'lead' : 'deal';
+		const idKey = type === 'lead' ? 'lead_id' : 'deal_id';
+		return [
+			'/mobile/crm/' + typeName + '/?page=view&' + idKey + '=' + id,
+			'/mobile/crm/type/' + entityTypeId + '/details/' + id + '/',
+			'/crm/type/' + entityTypeId + '/details/' + id + '/',
+			(type === 'lead' ? '/crm/lead/details/' : '/crm/deal/details/') + id + '/'
+		];
+	}
+
+	function waCcHostWindows(skipSelf) {
+		const seen = new Set();
+		const list = [];
+		if (!skipSelf) {
+			try { list.push(window); } catch (e) { /* ignore */ }
+		}
+		try { if (window.parent) list.push(window.parent); } catch (e) { /* ignore */ }
+		try { if (window.top) list.push(window.top); } catch (e) { /* ignore */ }
+		try { if (window.opener) list.push(window.opener); } catch (e) { /* ignore */ }
+		const out = [];
+		for (let i = 0; i < list.length; i++) {
+			try {
+				const w = list[i];
+				if (!w || seen.has(w)) continue;
+				if (skipSelf && w === window) continue;
+				seen.add(w);
+				out.push(w);
+			} catch (e) { /* ignore */ }
+		}
+		return out;
+	}
+
+	function openCrmViaPageManager(hosts, paths, title, origin) {
+		for (let h = 0; h < hosts.length; h++) {
+			try {
+				const pm = hosts[h].BXMobileApp && hosts[h].BXMobileApp.PageManager;
+				if (!pm) continue;
+				for (let p = 0; p < paths.length; p++) {
+					const opts = {
+						url: origin + paths[p],
+						title: title,
+						cache: false,
+						bx24ModernStyle: true
+					};
+					if (typeof pm.loadPageBlank === 'function') {
+						pm.loadPageBlank(opts);
+						return true;
+					}
+					if (typeof pm.loadPageStart === 'function') {
+						pm.loadPageStart(opts);
+						return true;
+					}
+					if (typeof pm.loadPageModal === 'function') {
+						pm.loadPageModal(opts);
+						return true;
+					}
+				}
+			} catch (e) { /* ignore */ }
+		}
+		return false;
+	}
+
+	function openCrmViaNativeEntity(hosts, type, id) {
+		const isLead = type === 'lead';
+		const entityTypeId = isLead ? 1 : 2;
+		for (let i = 0; i < hosts.length; i++) {
+			const w = hosts[i];
+			try {
+				if (w.Application && typeof w.Application.openCrmEntity === 'function') {
+					try {
+						w.Application.openCrmEntity({ entityTypeId: entityTypeId, entityId: id });
+					} catch (e1) {
+						w.Application.openCrmEntity({ id: id, type: isLead ? 'lead' : 'deal' });
+					}
+					return true;
+				}
+			} catch (e) { /* ignore */ }
+			try {
+				if (w.BX && w.BX.MobileTools && typeof w.BX.MobileTools.openEntity === 'function') {
+					w.BX.MobileTools.openEntity({ typeName: isLead ? 'lead' : 'deal', id: id });
+					return true;
+				}
+			} catch (e) { /* ignore */ }
+		}
+		return false;
+	}
+
+	function openCrmViaApplicationUrl(hosts, url) {
+		for (let i = 0; i < hosts.length; i++) {
+			try {
+				const app = hosts[i].Application;
+				if (app && typeof app.openUrl === 'function') {
+					app.openUrl(url);
+					return true;
+				}
+			} catch (e) { /* ignore */ }
+		}
+		return false;
+	}
+
+	function openCrmViaMobileBridge(type, id) {
+		const isLead = type === 'lead';
+		const entityTypeId = isLead ? 1 : 2;
+		const title = (isLead ? 'Лид #' : 'Сделка #') + id;
+		const origin = location.origin || '';
+		let paths = getMobileCrmEntityPaths(type, id);
+
+		try {
+			const router = waCcEachHostWindow(function (w) {
+				if (w.BX && w.BX.Crm && w.BX.Crm.Router && w.BX.Crm.Router.Instance) {
+					return w.BX.Crm.Router.Instance;
+				}
+				return null;
+			});
+			if (router && typeof router.getItemDetailUrl === 'function') {
+				const uri = router.getItemDetailUrl(entityTypeId, id);
+				const routed = uri && (uri.toString ? uri.toString() : String(uri));
+				if (routed && routed.indexOf('/') === 0) {
+					paths = [routed].concat(paths);
+				}
+			}
+		} catch (e) { /* ignore */ }
+
+		const allHosts = waCcHostWindows(false);
+		const primaryUrl = origin + paths[0];
+
+		// 1) Нативная карточка CRM в BitrixMobile (лучший путь)
+		if (openCrmViaNativeEntity(allHosts, type, id)) {
+			return true;
+		}
+
+		// 2) PageManager — как кнопка WhatsApp в карточке CRM
+		if (openCrmViaPageManager(allHosts, paths, title, origin)) {
+			return true;
+		}
+
+		// 3) Application.openUrl
+		if (openCrmViaApplicationUrl(allHosts, primaryUrl)) {
+			return true;
+		}
+
+		return false;
+	}
+
+	function getCrmEntityUrl(type, id) {
+		id = parseInt(id, 10) || 0;
+		if (!id) return '#';
+		const entityTypeId = type === 'lead' ? 1 : 2;
+		if (waCcIsMobileClient()) {
+			const origin = location.origin || '';
+			const typeName = type === 'lead' ? 'lead' : 'deal';
+			const idKey = type === 'lead' ? 'lead_id' : 'deal_id';
+			return origin + '/mobile/crm/' + typeName + '/?page=view&' + idKey + '=' + id;
+		}
+		return type === 'lead'
+			? '/crm/lead/details/' + id + '/'
+			: '/crm/deal/details/' + id + '/';
+	}
+
 	function openCrmEntity(type, id) {
 		id = parseInt(id, 10) || 0;
 		if (!id) return;
@@ -3946,15 +5712,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const desktopPath = isLead
 			? '/crm/lead/details/' + id + '/'
 			: '/crm/deal/details/' + id + '/';
-		const mobilePath = isLead
-			? '/mobile/crm/lead/?page=view&lead_id=' + id
-			: '/mobile/crm/deal/?page=view&deal_id=' + id;
-		const title = isLead ? ('Лид #' + id) : ('Сделка #' + id);
 
-		const onMobile = !!(window.__WA_NOPROLOG
-			|| (window.__WA_CC_BOOT && window.__WA_CC_BOOT.mobile)
-			|| (document.body && document.body.classList.contains('wa-cc-mobile'))
-			|| /BitrixMobile|BXMobileApp|Bitrix24\.Mobile|iPhone|Android/i.test(navigator.userAgent || ''));
+		const onMobile = waCcIsMobileClient();
 
 		function sidePanelOpen(path) {
 			const candidates = [];
@@ -3970,62 +5729,6 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			return false;
 		}
 
-		function openViaMobileBridge(absUrl) {
-			const app = waCcEachHostWindow(function (w) {
-				if (!w.Application) return null;
-				try {
-					if (typeof w.Application.openCrmEntity === 'function') {
-						w.Application.openCrmEntity({ id: id, type: isLead ? 'lead' : 'deal' });
-						return w.Application;
-					}
-					if (typeof w.Application.openUrl === 'function') {
-						w.Application.openUrl(absUrl);
-						return w.Application;
-					}
-				} catch (e1) {
-					try {
-						if (typeof w.Application.openCrmEntity === 'function') {
-							w.Application.openCrmEntity({ entityTypeId: isLead ? 1 : 2, entityId: id });
-							return w.Application;
-						}
-					} catch (e2) { /* ignore */ }
-				}
-				return null;
-			});
-			if (app) return true;
-
-			const pmHosts = [];
-			try { if (window.parent && window.parent !== window) pmHosts.push(window.parent); } catch (e) {}
-			try { if (window.top && window.top !== window) pmHosts.push(window.top); } catch (e) {}
-			pmHosts.push(window);
-
-			for (let i = 0; i < pmHosts.length; i++) {
-				try {
-					const pm = pmHosts[i].BXMobileApp && pmHosts[i].BXMobileApp.PageManager;
-					if (!pm) continue;
-					const opts = { url: absUrl, title: title, cache: false, bx24ModernStyle: true };
-					if (typeof pm.loadPageStart === 'function') {
-						pm.loadPageStart(opts);
-						return true;
-					}
-					if (typeof pm.loadPageBlank === 'function') {
-						pm.loadPageBlank(opts);
-						return true;
-					}
-				} catch (e) { /* ignore */ }
-			}
-
-			const mobileTools = waCcEachHostWindow(function (w) {
-				if (w.BX && w.BX.MobileTools && typeof w.BX.MobileTools.openEntity === 'function') {
-					w.BX.MobileTools.openEntity({ typeName: isLead ? 'lead' : 'deal', id: id });
-					return w.BX.MobileTools;
-				}
-				return null;
-			});
-			return !!mobileTools;
-		}
-
-		// Desktop: SidePanel у родителя портала (не внутри iframe локального приложения)
 		if (!onMobile) {
 			try {
 				if (window.BX24 && typeof BX24.openPath === 'function') {
@@ -4049,18 +5752,29 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			return;
 		}
 
-		// Mobile: native bridge → иначе навигация (раньше молчаливо не открывалось)
-		const absUrl = (location.origin || '') + mobilePath;
-		if (openViaMobileBridge(absUrl)) {
+		const paths = getMobileCrmEntityPaths(type, id);
+		const absUrl = (location.origin || '') + paths[0];
+		const title = (isLead ? 'Лид #' : 'Сделка #') + id;
+
+		if (openCrmViaMobileBridge(type, id)) {
 			return;
 		}
+
 		try {
 			if (window.top && window.top !== window) {
-				window.top.location.assign(absUrl);
-				return;
+				if (openCrmViaPageManager([window.top], paths, title, location.origin || '')) {
+					return;
+				}
 			}
 		} catch (e) { /* ignore */ }
-		window.location.assign(absUrl);
+
+		const aMob = document.createElement('a');
+		aMob.href = absUrl;
+		aMob.target = '_top';
+		aMob.rel = 'noopener noreferrer';
+		document.body.appendChild(aMob);
+		aMob.click();
+		aMob.remove();
 	}
 
 	function updateCrmButtons() {
@@ -4069,6 +5783,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const effDeal = getEffectiveCrmId('deal');
 		btnLead.style.display = hasChat && effLead ? 'inline-block' : 'none';
 		btnDeal.style.display = hasChat && effDeal ? 'inline-block' : 'none';
+		btnLead.href = effLead ? getCrmEntityUrl('lead', effLead) : '#';
+		btnDeal.href = effDeal ? getCrmEntityUrl('deal', effDeal) : '#';
 		if (effLead) {
 			btnLead.textContent = 'Лид #' + effLead;
 		} else {
@@ -4081,10 +5797,97 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 	}
 
-	function applyCrmBindings(chat, dialog) {
+	/**
+	 * Без placement (?leadId=): entity_data_2 часто старый лид (332043).
+	 * Ищем лид по телефону клиента + imopenlines.crm.chat.get (новее = приоритет).
+	 */
+	async function resolveCrmLeadForChat(chatId, dialog, chat) {
+		chatId = parseInt(chatId, 10);
+		if (!chatId) return 0;
+		if (crmPlacementLeadId > 0) return crmPlacementLeadId;
+
+		const cacheKey = String(chatId);
+		if (crmLeadResolveCache.has(cacheKey)) {
+			return crmLeadResolveCache.get(cacheKey);
+		}
+
+		const item = chat || currentChatData;
+		const phone = getClientPhone(item);
+		let leadIds = [];
+
+		if (phone && phone.length >= 10) {
+			try {
+				const dup = await rest('crm.duplicate.findbycomm', {
+					type: 'PHONE',
+					values: buildPhoneLookupValues(phone)
+				});
+				const dupData = dup.result || dup || {};
+				leadIds = (dupData.LEAD || []).map(function (id) {
+					return parseInt(id, 10);
+				}).filter(Boolean);
+				leadIds.sort(function (a, b) { return b - a; });
+			} catch (e) {
+				console.warn('resolveCrmLead duplicate', e);
+			}
+		}
+
+		for (let i = 0; i < leadIds.length && i < 20; i++) {
+			const leadId = leadIds[i];
+			try {
+				const chats = await rest('imopenlines.crm.chat.get', {
+					CRM_ENTITY_TYPE: 'lead',
+					CRM_ENTITY: leadId,
+					ACTIVE_ONLY: 'N'
+				});
+				const list = Array.isArray(chats) ? chats : (chats && chats.result) || [];
+				if (!Array.isArray(list)) continue;
+				const owns = list.some(function (c) {
+					return parseInt(c.CHAT_ID || c.chatId || c.id, 10) === chatId;
+				});
+				if (owns) {
+					crmLeadResolveCache.set(cacheKey, leadId);
+					return leadId;
+				}
+			} catch (e) { /* ignore */ }
+		}
+
+		for (let j = 0; j < leadIds.length && j < 10; j++) {
+			const actIds = new Set();
+			await fetchChatIdsFromCrmActivities('lead', leadIds[j], actIds);
+			if (actIds.has(chatId)) {
+				crmLeadResolveCache.set(cacheKey, leadIds[j]);
+				return leadIds[j];
+			}
+		}
+
+		const bindings = parseCrmBindings(getEntityData2(item, dialog));
+		if (bindings.leadId > 0) {
+			crmLeadResolveCache.set(cacheKey, bindings.leadId);
+			return bindings.leadId;
+		}
+
+		const fallback = leadIds[0] || 0;
+		crmLeadResolveCache.set(cacheKey, fallback);
+		return fallback;
+	}
+
+	async function applyCrmBindings(chat, dialog) {
 		crmBindings = parseCrmBindings(getEntityData2(chat, dialog));
-		if (crmContextDealId > 0) crmBindings.dealId = crmContextDealId;
-		if (crmContextLeadId > 0) crmBindings.leadId = crmContextLeadId;
+		if (crmPlacementDealId > 0) {
+			crmBindings.dealId = crmPlacementDealId;
+		} else if (crmContextDealId > 0) {
+			crmBindings.dealId = crmContextDealId;
+		}
+		if (crmPlacementLeadId > 0) {
+			crmBindings.leadId = crmPlacementLeadId;
+		} else {
+			const chatId = parseInt(
+				currentChatId || (chat && (chat.chat_id || (chat.chat && chat.chat.id))),
+				10
+			);
+			const resolved = await resolveCrmLeadForChat(chatId, dialog, chat);
+			if (resolved > 0) crmBindings.leadId = resolved;
+		}
 		updateCrmButtons();
 	}
 
@@ -4150,16 +5953,25 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				currentChatData.entity_data_2 = dialog.entity_data_2;
 				if (currentChatData.chat) currentChatData.chat.entity_data_2 = dialog.entity_data_2;
 			}
-			if (Array.isArray(dialog.readed_list) && dialog.readed_list.length) {
+			applyReadedList(dialog.readed_list || dialog.readedList);
+			if (Array.isArray(dialog.readed_list) && !isWhatsAppGroupChat(currentChatData)) {
 				const guest = dialog.readed_list.find(function (r) {
-					return parseInt(r.user_id, 10) > 0 && parseInt(r.user_id, 10) !== CURRENT_USER_ID;
+					const uid = parseInt(r.user_id, 10);
+					if (!uid || uid === CURRENT_USER_ID) return false;
+					const u = usersMap[uid];
+					if (u && isStaffPortalUser(u)) return false;
+					if (u && isConnectorGuestUser(u)) return true;
+					return false;
 				});
 				if (guest && guest.user_name && currentChatData) {
-					currentChatData._clientUserName = String(guest.user_name).trim();
+					const guestName = String(guest.user_name).trim();
+					if (guestName && !isGenericOlTitle(guestName) && !isConnectorOperatorLabel(guestName)) {
+						currentChatData._clientUserName = guestName;
+					}
 				}
 			}
 			sessionState = parseSessionState(dialog, currentChatData || {});
-			applyCrmBindings(currentChatData, dialog);
+			await applyCrmBindings(currentChatData, dialog);
 			await enrichChatDisplayNames([currentChatData]);
 			if (currentChatData && currentChatData._displayName) {
 				const key = chatStorageId(currentChatData);
@@ -4174,6 +5986,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			const av = getAvatarData(currentChatData);
 			titleEl.textContent = av.title;
 			setHeaderAvatar(av);
+			updateOutgoingTicks();
 			renderChatList();
 		} catch (e) {
 			console.warn('session state', e);
@@ -4186,7 +5999,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				isClosed: isClosed,
 				acceptedByMe: !needsAnswer && !isClosed
 			};
-			applyCrmBindings(currentChatData, null);
+			await applyCrmBindings(currentChatData, null);
 		}
 
 		updateSessionButtons();
@@ -4266,9 +6079,77 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	btnAnswer.addEventListener('click', acceptChat);
 	btnFinish.addEventListener('click', finishChat);
-	btnLead.addEventListener('click', () => openCrmEntity('lead', getEffectiveCrmId('lead')));
-	btnDeal.addEventListener('click', () => openCrmEntity('deal', getEffectiveCrmId('deal')));
+	function bindCrmEntityButton(el, type) {
+		el.addEventListener('click', function (e) {
+			if (e && e.preventDefault) e.preventDefault();
+			if (e && e.stopPropagation) e.stopPropagation();
+			const id = getEffectiveCrmId(type);
+			if (!id) return;
+			openCrmEntity(type, id);
+		});
+	}
+	bindCrmEntityButton(btnLead, 'lead');
+	bindCrmEntityButton(btnDeal, 'deal');
 	if (replyCancel) replyCancel.addEventListener('click', clearReplyTo);
+	if (fwdCloseBtn) fwdCloseBtn.addEventListener('click', closeForwardPicker);
+	if (fwdGoBtn) fwdGoBtn.addEventListener('click', confirmForward);
+	if (fwdEl) {
+		fwdEl.addEventListener('click', function (e) {
+			if (e.target === fwdEl) closeForwardPicker();
+		});
+	}
+	if (fwdSearchEl) {
+		fwdSearchEl.addEventListener('input', function () {
+			forwardSearchQuery = fwdSearchEl.value || '';
+			if (!forwardSearchQuery.trim()) {
+				forwardRemoteChats = [];
+				setForwardSearchLoading(false);
+			}
+			renderForwardList();
+			clearTimeout(forwardSearchTimer);
+			const q = forwardSearchQuery.trim();
+			if (q.length < 2) {
+				setForwardSearchLoading(false);
+				renderForwardList();
+				return;
+			}
+			forwardSearchTimer = setTimeout(function () {
+				setForwardSearchLoading(true);
+				renderForwardList();
+				const qDigits = normalizePhoneDigits(q);
+				const job = qDigits.length >= 10
+					? searchChatsByPhoneRemote(q)
+					: searchChatsByNameRemote(q);
+				job.then(async function (remote) {
+					if (!fwdEl || !fwdEl.classList.contains('open')) {
+						setForwardSearchLoading(false);
+						return;
+					}
+					if (fwdSearchEl.value.trim() !== q) {
+						setForwardSearchLoading(false);
+						return;
+					}
+					if (remote && remote.length) {
+						(remote || []).forEach(function (item) { item._fromSearch = true; });
+						try { await enrichChatDisplayNames(remote); } catch (e) {}
+						forwardRemoteChats = mergeChatLists(forwardRemoteChats || [], remote || []);
+						chatsCache = mergeChatLists(chatsCache, remote);
+					}
+					setForwardSearchLoading(false);
+					renderForwardList();
+				}).catch(function () {
+					setForwardSearchLoading(false);
+					renderForwardList();
+				});
+			}, 180);
+		});
+	}
+	document.addEventListener('keydown', function (e) {
+		if (e.key === 'Escape' && fwdEl && fwdEl.classList.contains('open')) {
+			e.preventDefault();
+			closeForwardPicker();
+		}
+	});
 
 	async function refreshTail() {
 		if (!currentDialogId) return;
@@ -4345,8 +6226,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return currentDialogId;
 	}
 
-	async function uploadViaDiskCommit(file, caption, notifyClient) {
-		const chatId = parseInt(currentChatId, 10);
+	async function uploadViaDiskCommit(file, caption, notifyClient, targetChat) {
+		const chatId = parseInt(
+			(targetChat && (targetChat.chat_id || (targetChat.chat && targetChat.chat.id))) || currentChatId,
+			10
+		);
 		if (!chatId) throw new Error('CHAT_ID не определён');
 
 		let folderId = null;
@@ -4354,7 +6238,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			const folder = await rest('im.disk.folder.get', { CHAT_ID: chatId });
 			folderId = folder.ID || folder.id;
 		} catch (e) {
-			const folder = await rest('im.disk.folder.get', { DIALOG_ID: getUploadDialogId() });
+			const dialogId = targetChat ? resolveDialogId(targetChat) : getUploadDialogId();
+			const folder = await rest('im.disk.folder.get', { DIALOG_ID: dialogId });
 			folderId = folder.ID || folder.id;
 		}
 		if (!folderId) throw new Error('Не удалось получить папку чата');
@@ -4736,7 +6621,12 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	searchEl.addEventListener('input', function () {
 		searchQuery = searchEl.value || '';
 		if (searchQuery.trim()) {
-			chatsCache.forEach(function (chat) { chat._phones = getChatPhones(chat); });
+			chatsCache.forEach(function (chat) {
+				chat._phones = getChatPhones(chat);
+				delete chat._clientPhone;
+			});
+		} else {
+			searchRecentLoaded = false;
 		}
 		renderChatList();
 
@@ -4769,9 +6659,16 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const pullType = (BX.PullClient && BX.PullClient.SubscriptionType)
 			? BX.PullClient.SubscriptionType.Server : null;
 		const pullCommands = ['messageChat', 'message', 'messageAdd', 'messageUpdate', 'messageChatAdd'];
+		const pullReadCommands = ['readMessage', 'readMessageChat', 'readMessageOpponent', 'readMessageOpponentChat'];
 
 		pullCommands.forEach(function (command) {
 			const sub = { moduleId: 'im', command: command, callback: handlePullMessage };
+			if (pullType) sub.type = pullType;
+			BX.PULL.subscribe(sub);
+		});
+
+		pullReadCommands.forEach(function (command) {
+			const sub = { moduleId: 'im', command: command, callback: handlePullRead };
 			if (pullType) sub.type = pullType;
 			BX.PULL.subscribe(sub);
 		});
@@ -4782,6 +6679,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				const cmd = data.command;
 				const params = data.params || {};
 				if (pullCommands.indexOf(cmd) !== -1) handlePullMessage(params);
+				if (pullReadCommands.indexOf(cmd) !== -1) handlePullRead(params);
 				if (cmd === 'recentChange' || cmd === 'chatUpdate') {
 					loadChatList();
 					if (currentChatId) refreshSessionState();
@@ -4806,11 +6704,15 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	let chatPollTimer = null;
+	let readPollTick = 0;
 	function startChatPolling() {
 		if (chatPollTimer) clearInterval(chatPollTimer);
+		readPollTick = 0;
 		chatPollTimer = setInterval(function () {
 			if (currentDialogId && !sending && !recording) {
 				refreshTail().catch(function () {});
+				readPollTick++;
+				if (readPollTick % 2 === 0) refreshReadReceipts().catch(function () {});
 			}
 		}, 4000);
 	}
@@ -5002,14 +6904,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			for (let p = 0; p < phones.length && p < 3; p++) {
 				const userCode = buildUserCodeFromOlMeta(metas[m], phones[p]);
 				if (!userCode || failedUserCodeLookups.has(userCode)) continue;
-				try {
-					const data = await rest('imopenlines.dialog.get', { USER_CODE: userCode });
-					const dialog = data.result || data;
-					const cid = parseInt(dialog.id, 10);
-					if (cid) chatIds.add(cid);
-				} catch (e) {
-					failedUserCodeLookups.add(userCode);
-				}
+				const cid = await resolveChatIdByUserCode(userCode);
+				if (cid) chatIds.add(cid);
 			}
 		}
 
@@ -5392,8 +7288,14 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const dealIdParam = dealIdRaw ? String(parseCrmEntityId(dealIdRaw) || '') : '';
 		const leadIdParam = leadIdRaw ? String(parseCrmEntityId(leadIdRaw) || '') : '';
 		if (!chatIdParam && !dialogIdParam && !dealIdRaw && !leadIdRaw) return;
-		if (leadIdParam) crmContextLeadId = parseInt(leadIdParam, 10) || crmContextLeadId;
-		if (dealIdParam) crmContextDealId = parseInt(dealIdParam, 10) || crmContextDealId;
+		if (leadIdParam) {
+			crmContextLeadId = parseInt(leadIdParam, 10) || crmContextLeadId;
+			crmPlacementLeadId = crmContextLeadId;
+		}
+		if (dealIdParam) {
+			crmContextDealId = parseInt(dealIdParam, 10) || crmContextDealId;
+			crmPlacementDealId = crmContextDealId;
+		}
 		if ((dealIdRaw || leadIdRaw) && !dealIdParam && !leadIdParam) {
 			console.warn('WA CC: некорректный dealId/leadId', dealIdRaw || leadIdRaw);
 			return;
@@ -5422,11 +7324,17 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			if (fromCrm) {
 				crmFocusDialogId = resolveDialogId(target);
 				if (isWhatsAppGroupChat(target)) listFilter = 'groups';
-				if (leadIdParam) crmContextLeadId = parseInt(leadIdParam, 10) || crmContextLeadId;
-				if (dealIdParam) crmContextDealId = parseInt(dealIdParam, 10) || crmContextDealId;
+				if (leadIdParam) {
+					crmContextLeadId = parseInt(leadIdParam, 10) || crmContextLeadId;
+					crmPlacementLeadId = crmContextLeadId;
+				}
+				if (dealIdParam) {
+					crmContextDealId = parseInt(dealIdParam, 10) || crmContextDealId;
+					crmPlacementDealId = crmContextDealId;
+				}
 			}
 			renderChatList();
-			await openDialog(target);
+			await openDialog(target, { keepPlacement: true });
 			return true;
 		};
 

@@ -14,4 +14,9 @@
  *   if (is_file($olLeads)) {
  *       require_once $olLeads;
  *   }
+ *
+ *   $waKanbanPaint = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_kanban_deal_paint.php';
+ *   if (is_file($waKanbanPaint)) {
+ *       require_once $waKanbanPaint;
+ *   }
  */

@@ -1,0 +1,12 @@
+/**
+ * Tint только на .crm-kanban-item — gap (.main-kanban-item padding) остаётся прозрачным.
+ */
+.crm-kanban-item.wa-kanban-paint-green {
+	background: #bff5bf !important;
+	background-color: #bff5bf !important;
+}
+
+.crm-kanban-item.wa-kanban-paint-blue {
+	background: #bfedff !important;
+	background-color: #bfedff !important;
+}

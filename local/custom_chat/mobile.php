@@ -3,12 +3,22 @@
  * Мобильный вход в КЦ БЕЗ prolog_before.
  * В WebView локального приложения BitrixMobile страница с prolog = белый экран.
  * Здесь только HMAC-токен / AUTH_ID → HTML КЦ → REST через wa_aid.
+ *
+ * Важно: для wa_media / wa_ticks / прочих API НЕ слать Content-Type: text/html —
+ * иначе <audio> получает поток с неправильным MIME и в WebView «мёртвый».
  */
 if (!defined('WA_CC_MOBILE_NOPROLOG')) {
 	define('WA_CC_MOBILE_NOPROLOG', true);
 }
 
-if (!headers_sent()) {
+$waIsApi = array_key_exists('wa_media', $_GET)
+	|| array_key_exists('wa_ticks', $_GET)
+	|| array_key_exists('wa_resolve_ol', $_GET)
+	|| array_key_exists('wa_resolve_uc', $_GET)
+	|| array_key_exists('wa_group_title', $_GET)
+	|| array_key_exists('wa_ffmpeg', $_GET);
+
+if (!$waIsApi && !headers_sent()) {
 	header('Content-Type: text/html; charset=UTF-8');
 	header('Cache-Control: no-store, no-cache, must-revalidate');
 }
@@ -33,6 +43,14 @@ if ($userId <= 0 && $aid !== '') {
 }
 
 if ($userId <= 0) {
+	if ($waIsApi) {
+		http_response_code(401);
+		if (!headers_sent()) {
+			header('Content-Type: text/plain; charset=utf-8');
+		}
+		echo 'Auth required';
+		die();
+	}
 	http_response_code(200);
 	echo '<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8">'
 		. '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -45,6 +63,7 @@ if ($userId <= 0) {
 
 $GLOBALS['WA_CC_FORCED_USER_ID'] = $userId;
 $GLOBALS['WA_CC_AID'] = $aid;
+$GLOBALS['WA_CC_MEDIA_AUTHED'] = true;
 
 if (!empty($_GET['leadId']) || !empty($_GET['LEAD_ID'])) {
 	$GLOBALS['WA_CC_CRM_LEAD_ID'] = (int)($_GET['leadId'] ?? $_GET['LEAD_ID'] ?? 0);

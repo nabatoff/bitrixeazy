@@ -1036,6 +1036,34 @@ function olLineLeadsGetChatsForLead($leadId)
 		/* ignore */
 	}
 
+	// 5) Green API / OL: чаты с этим лидом в ENTITY_DATA (Bitrix часто не кладёт второй чат в CRM activity)
+	try {
+		global $DB;
+		if ($DB) {
+			$needle = 'LEAD|' . $leadId . '|';
+			$needleSql = $DB->ForSql($needle);
+			$needleLike = $DB->ForSql('%|' . $needle);
+			$res = $DB->Query(
+				"SELECT ID, ENTITY_ID FROM b_im_chat WHERE TYPE='L' AND ("
+				. "ENTITY_DATA_2 LIKE '" . $needleSql . "%' OR ENTITY_DATA_1 LIKE '" . $needleLike . "%'"
+				. ") ORDER BY ID DESC LIMIT 50"
+			);
+			while ($row = $res->Fetch()) {
+				$lineId = 0;
+				$eid = (string)($row['ENTITY_ID'] ?? '');
+				$parts = array_values(array_filter(explode('|', $eid), static function ($p) {
+					return $p !== '';
+				}));
+				if (count($parts) >= 2 && ctype_digit((string)$parts[1])) {
+					$lineId = (int)$parts[1];
+				}
+				$add((int)($row['ID'] ?? 0), $lineId);
+			}
+		}
+	} catch (\Throwable $e) {
+		/* ignore */
+	}
+
 	return $result;
 }
 
