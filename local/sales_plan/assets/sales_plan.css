@@ -1,0 +1,26 @@
+.af-sp-app { padding: 16px 20px 32px; font-family: var(--ui-font-family-primary, Arial, sans-serif); }
+.af-sp-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 20px; }
+.af-sp-toolbar__group { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.af-sp-label { font-size: 12px; color: #828b95; }
+.af-sp-alert { padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; background: #fff3cd; color: #856404; }
+.af-sp-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.af-sp-card { background: #fff; border: 1px solid #e8ecf0; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.af-sp-card__label { font-size: 12px; color: #828b95; margin-bottom: 6px; }
+.af-sp-card__value { font-size: 22px; font-weight: 600; color: #333; }
+.af-sp-card__value--risk { color: #d9534f; }
+.af-sp-card__sub { font-size: 12px; color: #828b95; margin-top: 4px; }
+.af-sp-table-wrap { overflow: auto; background: #fff; border: 1px solid #e8ecf0; border-radius: 10px; }
+.af-sp-table { width: 100%; border-collapse: collapse; min-width: 900px; }
+.af-sp-table th, .af-sp-table td { padding: 10px 12px; border-bottom: 1px solid #eef2f4; text-align: left; font-size: 13px; }
+.af-sp-table th { background: #f8fafb; color: #525c69; font-weight: 600; }
+.af-sp-table tr:hover td { background: #fafbfc; }
+.af-sp-input { width: 110px; padding: 6px 8px; border: 1px solid #c6cdd3; border-radius: 6px; }
+.af-sp-progress { height: 8px; background: #eef2f4; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+.af-sp-progress__bar { height: 100%; background: linear-gradient(90deg, #2fc6f6, #47d1ae); }
+.af-sp-progress__bar--risk { background: linear-gradient(90deg, #ff9f43, #ff6b6b); }
+.af-sp-link { color: #2067b0; cursor: pointer; text-decoration: none; border-bottom: 1px dashed #2067b0; }
+.af-sp-link:hover { color: #164f88; }
+.af-sp-badge { display: inline-block; font-size: 11px; padding: 2px 6px; border-radius: 999px; background: #ffe8e8; color: #c0392b; margin-left: 6px; }
+.af-sp-audit { margin-top: 24px; background: #fff; border: 1px solid #e8ecf0; border-radius: 10px; padding: 16px; }
+.af-sp-deals-list { list-style: none; padding: 0; margin: 16px 0; }
+.af-sp-deals-list li { padding: 6px 0; border-bottom: 1px solid #eef2f4; }

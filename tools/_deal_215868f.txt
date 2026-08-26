@@ -1,0 +1,68 @@
+==== INIT SNIPPET DSG ====
+pos=19911
+           }
+            </script>
+        ');
+    }
+}
+
+$waCc = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/include_crm_button.php';
+if (is_file($waCc)) {
+    require_once $waCc;
+}
+
+$olLeads = $_SERVER['DOCUMENT_ROOT'] . '/local/custom_chat/include_ol_line_leads.php';
+if (is_file($olLeads)) {
+    require_once $olLeads;
+}
+
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/php_interface/classes/DealStageGuard.php');
+\DealStageGuard::register();
+
+$waKanbanPaint = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_kanban_deal_paint.php';
+if (is_file($waKanbanPaint)) {
+    require_once $waKanbanPaint;
+}
+
+$waDealUfLock = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_deal_uf_lock.php';
+if (is_file($waDealUfLock)) {
+    require_once $waDealUfLock;
+}
+
+$waDealAutoTake = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_deal_auto_take.php';
+if (is_file($waDealAutoTake)) {
+    require_once $waDealAutoTake;
+}
+
+$waDealUfHist = $_SERVER['DOCUMENT_ROOT'] . '/local/crm/include_deal_uf_history.php';
+if (is_file($waDealUfHist)) {
+    require_once $waDealUfHist;
+}
+
+
+==== FIND DSG FILE ====
+/home/bitrix/www/bitrix/php_interface/classes/DealStageGuard.php
+
+==== BP 294 STATE ====
+{"ID":"6a8bfd9200f181.30162498","WORKFLOW_TEMPLATE_ID":"309","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8bfda3ac3ef5.16532628","WORKFLOW_TEMPLATE_ID":"294","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8bfda3f32149.03250219","WORKFLOW_TEMPLATE_ID":"307","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8bfda518fc67.46495478","WORKFLOW_TEMPLATE_ID":"314","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8bfdaf7def95.12851894","WORKFLOW_TEMPLATE_ID":"294","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8bfdafc5baf4.31293737","WORKFLOW_TEMPLATE_ID":"307","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8bfdb0ef8fd8.36011009","WORKFLOW_TEMPLATE_ID":"361","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c0106b6b977.28568401","WORKFLOW_TEMPLATE_ID":"294","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c0107057a08.51350382","WORKFLOW_TEMPLATE_ID":"307","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c010b049d30.74436206","WORKFLOW_TEMPLATE_ID":"294","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c010c890132.19822498","WORKFLOW_TEMPLATE_ID":"307","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c029ee970a7.99105195","WORKFLOW_TEMPLATE_ID":"294","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c029f543813.50085252","WORKFLOW_TEMPLATE_ID":"307","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c0502e0ecf1.97262989","WORKFLOW_TEMPLATE_ID":"294","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c05032a7fd1.47400023","WORKFLOW_TEMPLATE_ID":"307","STATE":"Completed","STATE_TITLE":"Завершен"}
+{"ID":"6a8c05044cb277.26424361","WORKFLOW_TEMPLATE_ID":"314","STATE":"Completed","STATE_TITLE":"Завершен"}
+
+==== WAREHOUSE UFS ====
+{"UF_CRM_1784524115744":"912","UF_CRM_1787123174":"954","UF_CRM_1787123117":"297784","UF_CRM_1764332847245":"1","UF_CRM_1785326361467":null,"UF_CRM_1785324070":null}
+
+==== EVENTS PREPAY-LIKE ====
+При выполнении скрипта возникла ошибка. Включить расширенный вывод ошибок можно в файле настроек <a href='https://dev.1c-bitrix.ru/learning/course/index.php?COURSE_ID=43&LESSON_ID=2795'>.settings.php</a>

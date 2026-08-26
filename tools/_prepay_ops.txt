@@ -1,0 +1,7 @@
+grep -n 'OnBeforeCrmDealUpdate\|OnAfterCrmDealUpdate' /home/bitrix/www/bitrix/modules/crm/lib/Service/Operation/Update.php
+
+grep -n 'OnBeforeCrmDealUpdate\|OnAfterCrmDealUpdate' /home/bitrix/www/bitrix/modules/crm/lib/Service/Operation/*.php /home/bitrix/www/bitrix/modules/crm/lib/Service/Operation/*/*.php 2>/dev/null | head -40
+
+grep -rn 'OnBeforeCrmDealUpdate' /home/bitrix/www/bitrix/modules/crm/lib/Service --include='*.php' | head -30
+/home/bitrix/www/bitrix/modules/crm/lib/Service/Factory/Deal.php:692:					'OnBeforeCrmDealUpdate',
+

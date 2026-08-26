@@ -5,11 +5,30 @@
 (function () {
 	'use strict';
 
-	var FIELDS = Array.isArray(window.__WA_DEAL_UF_LOCK) ? window.__WA_DEAL_UF_LOCK : [];
-	if (!FIELDS.length) return;
-
+	var FIELDS = [];
 	var locked = {};
-	FIELDS.forEach(function (n) { locked[String(n)] = 1; });
+
+	function currentFields() {
+		var a = Array.isArray(window.__WA_DEAL_UF_LOCK) ? window.__WA_DEAL_UF_LOCK : [];
+		var b = Array.isArray(window.__DSG_FIELD_LOCK) ? window.__DSG_FIELD_LOCK : [];
+		return a.concat(b);
+	}
+
+	function rebuildLocked() {
+		FIELDS = currentFields();
+		locked = {};
+		FIELDS.forEach(function (n) { locked[String(n)] = 1; });
+		return FIELDS.length;
+	}
+
+	if (window.WaDealUfLock && typeof window.WaDealUfLock.apply === 'function') {
+		window.WaDealUfLock.apply();
+		return;
+	}
+
+	if (!rebuildLocked()) {
+		/* поля могут появиться позже (DSG epilog) — всё равно подпишемся */
+	}
 
 	function markNode(node) {
 		if (!node || !node.classList) return;
@@ -153,6 +172,8 @@
 	}
 
 	function apply() {
+		rebuildLocked();
+		if (!FIELDS.length) return;
 		findEditors().forEach(walkControls);
 		lockDomFallbacks();
 	}

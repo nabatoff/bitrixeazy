@@ -181,16 +181,6 @@ if (!function_exists('waDealUfHistory_onBeforeUpdate')) {
 		if ($id <= 0) {
 			return true;
 		}
-		$touch = false;
-		foreach (waDealUfHistory_fields() as $name) {
-			if (array_key_exists($name, $arFields)) {
-				$touch = true;
-				break;
-			}
-		}
-		if (!$touch) {
-			return true;
-		}
 		if (!isset($GLOBALS['WA_DEAL_UF_HISTORY_OLD']) || !is_array($GLOBALS['WA_DEAL_UF_HISTORY_OLD'])) {
 			$GLOBALS['WA_DEAL_UF_HISTORY_OLD'] = [];
 		}
@@ -256,9 +246,6 @@ if (!function_exists('waDealUfHistory_onAfterUpdate')) {
 		}
 
 		foreach (waDealUfHistory_fields() as $name) {
-			if (!array_key_exists($name, $arFields)) {
-				continue;
-			}
 			$before = $old[$name] ?? null;
 			$after = $new[$name] ?? null;
 			if (waDealUfHistory_same($name, $before, $after)) {
@@ -270,6 +257,32 @@ if (!function_exists('waDealUfHistory_onAfterUpdate')) {
 	}
 }
 
+if (!function_exists('waDealUfHistory_onAfterAdd')) {
+	function waDealUfHistory_onAfterAdd(&$arFields)
+	{
+		if (!is_array($arFields)) {
+			return true;
+		}
+		$id = (int)($arFields['ID'] ?? 0);
+		if ($id <= 0) {
+			return true;
+		}
+		$new = waDealUfHistory_loadValues($id);
+		if (!$new) {
+			return true;
+		}
+		foreach (waDealUfHistory_fields() as $name) {
+			$after = $new[$name] ?? null;
+			if (waDealUfHistory_same($name, null, $after)) {
+				continue;
+			}
+			waDealUfHistory_registerChange($id, $name, null, $after);
+		}
+		return true;
+	}
+}
+
 $em = \Bitrix\Main\EventManager::getInstance();
 $em->addEventHandler('crm', 'OnBeforeCrmDealUpdate', 'waDealUfHistory_onBeforeUpdate');
 $em->addEventHandler('crm', 'OnAfterCrmDealUpdate', 'waDealUfHistory_onAfterUpdate');
+$em->addEventHandler('crm', 'OnAfterCrmDealAdd', 'waDealUfHistory_onAfterAdd');

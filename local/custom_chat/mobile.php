@@ -13,6 +13,13 @@ if (!defined('WA_CC_MOBILE_NOPROLOG')) {
 
 $waIsApi = array_key_exists('wa_media', $_GET)
 	|| array_key_exists('wa_ticks', $_GET)
+	|| array_key_exists('wa_lines', $_GET)
+	|| array_key_exists('wa_attach', $_GET)
+	|| array_key_exists('wa_start', $_GET)
+	|| array_key_exists('wa_bulk_zip', $_GET)
+	|| array_key_exists('wa_quote_send', $_GET)
+	|| array_key_exists('wa_quote_link', $_GET)
+	|| array_key_exists('wa_msg_meta', $_GET)
 	|| array_key_exists('wa_resolve_ol', $_GET)
 	|| array_key_exists('wa_resolve_uc', $_GET)
 	|| array_key_exists('wa_group_title', $_GET)
@@ -85,6 +92,27 @@ if ($tok !== '') {
 if ($aid !== '') {
 	$_GET['wa_aid'] = $aid;
 	$_REQUEST['wa_aid'] = $aid;
+}
+
+if (!empty($_GET['wa_ffmpeg'])) {
+	require __DIR__ . '/ajax_ffmpeg.php';
+	exit;
+}
+if (array_key_exists('wa_ticks', $_GET)) {
+	require __DIR__ . '/ajax_ticks.php';
+	exit;
+}
+if (array_key_exists('wa_lines', $_GET)) {
+	require __DIR__ . '/ajax_wa_lines.php';
+	exit;
+}
+if (array_key_exists('wa_attach', $_GET)) {
+	require __DIR__ . '/ajax_wa_attach.php';
+	exit;
+}
+if (array_key_exists('wa_start', $_GET)) {
+	require __DIR__ . '/ajax_wa_start.php';
+	exit;
 }
 
 require __DIR__ . '/index.php';

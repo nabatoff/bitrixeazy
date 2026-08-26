@@ -4,6 +4,8 @@
  * POST: ids[]=1&ids[]=2  или  ids=1,2,3
  */
 define('NO_KEEP_STATISTIC', true);
+define('NO_AGENT_CHECK', true);
+define('DisableEventsCheck', true);
 define('NOT_CHECK_PERMISSIONS', false);
 define('StopBuffering', true);
 

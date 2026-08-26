@@ -1,0 +1,220 @@
+<?php
+/**
+ * Установка:
+ * 1. Скопируйте этот файл в /bitrix/php_interface/classes/DealStageGuard.php
+ * 2. В /bitrix/php_interface/init.php добавьте:
+ *    require_once($_SERVER['DOCUMENT_ROOT'].'/bitrix/php_interface/classes/DealStageGuard.php');
+ *    \DealStageGuard::register();
+ *
+ * Что делает:
+ * Проверяет обязательные поля ПЕРЕД сохранением сделки при смене стадии.
+ * Если сделка перепрыгивает через стадии, проверяются условия ВСЕХ
+ * пропущенных стадий, а не только целевой. Если условие не выполнено —
+ * сохранение блокируется, пользователь видит ошибку, сделка остаётся
+ * на месте.
+ *
+ * Технический момент: сохранение сделки в Битриксе может идти двумя
+ * разными путями — через старый CCrmDeal::Update() (обычное перетаскивание
+ * в Канбане) или через новый механизм на базе DealTable (в частности,
+ * форма "заполните обязательные поля" перед сменой стадии использует
+ * именно его). Старое событие OnBeforeCrmDealUpdate во втором случае
+ * НЕ вызывается — поэтому здесь повешены сразу ДВА обработчика: старый
+ * (подстраховка) и новый на уровне DealTable (основной, ловит оба пути).
+ */
+
+class DealStageGuard
+{
+    private static $stageOrder = ['PREPARATION', 'PREPAYMENT_INVOIC', 'EXECUTING', 'WON'];
+
+    // временно: пишет в /upload/dealguard_test.log — удобно проверять,
+    // какой из двух обработчиков реально сработал. Можно убрать вызовы
+    // self::log(...) после того, как всё будет протестировано.
+    private static function log($msg)
+    {
+        @file_put_contents(
+            $_SERVER['DOCUMENT_ROOT'] . '/upload/dealguard_test.log',
+            date('Y-m-d H:i:s') . ' ' . $msg . "\n",
+            FILE_APPEND
+        );
+    }
+
+    // register() выполняется на КАЖДОЙ загрузке страницы админки (в т.ч.
+    // фоновые опросы каждую секунду) — поэтому здесь НЕЛЬЗЯ логировать
+    // безусловно на каждый вызов, иначе лог-файл раздувается за часы до
+    // миллионов строк и начинает тормозить сайт. Пишем только в catch —
+    // то есть только если что-то реально пошло не так.
+    public static function register()
+    {
+        try {
+            AddEventHandler('crm', 'OnBeforeCrmDealUpdate', ['DealStageGuard', 'onBeforeUpdateLegacy']);
+        } catch (\Throwable $e) {
+            self::log('[init] legacy hook FAILED: ' . $e->getMessage());
+        }
+
+        try {
+            if (!class_exists('\Bitrix\Main\Loader') || !\Bitrix\Main\Loader::includeModule('crm')) {
+                return;
+            }
+            if (!class_exists('\Bitrix\Crm\DealTable')) {
+                return;
+            }
+            // Правильный способ подписки на ORM-событие в Битриксе — через
+            // EventManager с именем события "ИмяКласса::OnBeforeUpdate",
+            // а не прямым вызовом метода у объекта сущности (его там нет).
+            \Bitrix\Main\EventManager::getInstance()->addEventHandler(
+                'crm',
+                '\Bitrix\Crm\DealTable::OnBeforeUpdate',
+                ['DealStageGuard', 'onBeforeUpdateOrm']
+            );
+        } catch (\Throwable $e) {
+            self::log('[init] orm hook FAILED: ' . $e->getMessage());
+        }
+
+        // ВРЕМЕННО ОТКЛЮЧЕНО по просьбе пользователя (17.08) — проверка
+        // контакта/компании (создание сделки) пока не нужна, работа над
+        // ней приостановлена. Стадийная логика (evaluate()) не затронута.
+        // Раскомментировать, когда продолжим:
+        // try {
+        //     AddEventHandler('crm', 'OnBeforeCrmDealAdd', ['DealStageGuard', 'onBeforeAddLegacy']);
+        // } catch (\Throwable $e) {
+        //     self::log('[init] add-legacy hook FAILED: ' . $e->getMessage());
+        // }
+        //
+        // try {
+        //     if (class_exists('\Bitrix\Main\Loader') && \Bitrix\Main\Loader::includeModule('crm')
+        //         && class_exists('\Bitrix\Crm\DealTable')) {
+        //         \Bitrix\Main\EventManager::getInstance()->addEventHandler(
+        //             'crm',
+        //             '\Bitrix\Crm\DealTable::OnBeforeAdd',
+        //             ['DealStageGuard', 'onBeforeAddOrm']
+        //         );
+        //     }
+        // } catch (\Throwable $e) {
+        //     self::log('[init] add-orm hook FAILED: ' . $e->getMessage());
+        // }
+
+        try {
+            AddEventHandler('main', 'OnEpilog', ['DealStageGuard', 'printReloadListener']);
+        } catch (\Throwable $e) {
+            self::log('[init] epilog hook FAILED: ' . $e->getMessage());
+        }
+    }
+
+    // Некоторые виджеты Битрикса (карточка сделки, клик по плашке стадии)
+    // не показывают текст ошибки и не откатывают карточку визуально после
+    // блокировки — сделка "зависает" на неверной стадии до ручной
+    // перезагрузки. Чтобы не гадать про внутренности каждого виджета,
+    // подписываемся на тот же pull-канал, что уже используется для
+    // push-уведомлений, и просто перезагружаем страницу сделки, если
+    // блокировка коснулась именно открытой сейчас сделки.
+    public static function printReloadListener()
+    {
+        try {
+            if (strpos($_SERVER['REQUEST_URI'] ?? '', '/crm/deal/') === false) {
+                return;
+            }
+            ?>
+<script>
+(function() {
+    if (typeof BX === 'undefined' || typeof BX.addCustomEvent !== 'function') {
+        return;
+    }
+    // Pull-соединение общее на все открытые фреймы/вкладки (через
+    // SharedWorker), поэтому один и тот же сигнал долетает и до фрейма
+    // слайдера, и до родительской страницы позади него. Обрабатываем
+    // только в самом верхнем окне — иначе оба обработчика реагируют
+    // одновременно, и после мягкого обновления слайдера следом
+    // срабатывает ещё и полная перезагрузка страницы.
+    if (window.self !== window.top) {
+        return;
+    }
+
+    // Никакого своего попапа с полями больше нет: слишком много
+    // особенностей конкретной CRM-конфигурации, которые надёжно умеет
+    // обрабатывать только сама карточка Битрикса (списки со своими
+    // значениями, поиск/создание компании и т.п.). Вместо этого просто
+    // открываем штатную карточку контакта в боковом слайдере — дальше
+    // всё стандартное битриксовское: правильные поля, валидация, сохранение.
+    function dealStageGuardOpenNative(contactId) {
+        try {
+            var topWin = window.top;
+            if (contactId && topWin && topWin.BX && topWin.BX.SidePanel && topWin.BX.SidePanel.Instance) {
+                topWin.BX.SidePanel.Instance.open('/crm/contact/details/' + contactId + '/');
+            }
+        } catch (e) {}
+    }
+
+    BX.addCustomEvent('onPullEvent-dealstageguard', function(command, params) {
+        try {
+            if (command !== 'dealstageguard_blocked') {
+                return;
+            }
+            var topWin = window.top;
+            var openSlider = null;
+            try {
+                if (topWin && topWin.BX && topWin.BX.SidePanel && topWin.BX.SidePanel.Instance) {
+                    openSlider = topWin.BX.SidePanel.Instance.getTopSlider();
+                }
+            } catch (eGetSlider) {}
+
+            // На странице конкретной сделки (details/<ID>/) реагируем только
+            // если ID совпадает — чтобы не мешать другой открытой сделке.
+            // Но чаще сделка открывается не прямой ссылкой, а слайдером
+            // поверх Канбана/списка — тогда в адресе САМОЙ вкладки ID
+            // сделки не видно вообще, хотя вкладка всё равно "смотрит" на
+            // конкретную сделку. Поэтому дополнительно спрашиваем сам
+            // слайдер, какой URL в нём сейчас открыт — без этого попап
+            // показывался вообще на всех открытых вкладках подряд.
+            var m = window.location.pathname.match(/\/crm\/deal\/details\/(\d+)/);
+            var currentDealId = m ? parseInt(m[1], 10) : null;
+
+            if (currentDealId === null && openSlider) {
+                var sliderUrl = '';
+                try {
+                    if (typeof openSlider.getUrl === 'function') {
+                        sliderUrl = openSlider.getUrl() || '';
+                    } else if (openSlider.url) {
+                        sliderUrl = openSlider.url;
+                    } else if (typeof openSlider.getData === 'function') {
+                        var sliderData = openSlider.getData();
+                        sliderUrl = (sliderData && sliderData.url) || '';
+                    }
+                } catch (eSliderUrl) {}
+
+                var sm = String(sliderUrl).match(/\/crm\/deal\/details\/(\d+)/);
+                if (sm) {
+                    currentDealId = parseInt(sm[1], 10);
+                }
+            }
+
+            if (currentDealId !== null && (!params || parseInt(params.dealId, 10) !== currentDealId)) {
+                return;
+            }
+
+            // Если сделка открыта в боковом слайдере — обновляем только его
+            // содержимое через официальный API BX.SidePanel, без перезагрузки
+            // всей страницы. Если слайдера нет (сделка открыта как отдельная
+            // страница) — откатываемся на обычную перезагрузку.
+            // Перезагрузка/обновление слайдера нужны только на странице
+            // конкретной сделки — там карточка "зависает" сама, ничего не
+            // откатывая. В Канбане/списке (currentDealId === null) карточка
+            // и так корректно возвращается на место сама, а перезагрузка
+            // всей доски только мешает прочитать текст ошибки — поэтому
+            // там просто показываем сообщение, без reload. При блокировке
+            // из-за клиента (kind === 'client') reload тоже не делаем —
+            // сейчас поверх откроется карточка контакта, обновление сзади
+            // только помешает.
+            var isClientBlock = params && params.kind === 'client';
+            if (currentDealId !== null && !isClientBlock) {
+                var reloaded = false;
+                try {
+                    if (openSlider && typeof openSlider.reload === 'function') {
+                        openSlider.reload();
+                        reloaded = true;
+                    }
+                } catch (e2) {}
+
+                if (!reloaded) {
+                    window.location.reload();
+                }
+            }

@@ -258,7 +258,7 @@
 		flushTimer = setTimeout(function () {
 			flushTimer = null;
 			flushQueue();
-		}, 80);
+		}, 150);
 	}
 
 	function enqueueDeal(id) {
@@ -338,7 +338,38 @@
 		paintTimer = setTimeout(function () {
 			paintTimer = null;
 			paintAll();
-		}, 50);
+		}, 150);
+	}
+
+	function invalidateDeals(ids) {
+		var any = false;
+		(ids || []).forEach(function (id) {
+			id = parseInt(id, 10) || 0;
+			if (id <= 0) return;
+			delete cache[id];
+			delete pending[id];
+			any = true;
+		});
+		if (any) schedulePaint();
+	}
+
+	function idsFromCrmPull(params) {
+		var ids = [];
+		if (!params) return ids;
+		function push(v) {
+			if (v && typeof v === 'object') {
+				push(v.ID || v.id || v.ENTITY_ID);
+				return;
+			}
+			var n = parseInt(v, 10);
+			if (n > 0) ids.push(n);
+		}
+		push(params.ID || params.id || params.ENTITY_ID);
+		if (params.FIELDS) push(params.FIELDS.ID || params.FIELDS.id);
+		if (params.fields) push(params.fields.ID || params.fields.id);
+		if (Array.isArray(params.IDS)) params.IDS.forEach(push);
+		if (Array.isArray(params.ids)) params.ids.forEach(push);
+		return ids;
 	}
 
 	function invalidateVisible() {
@@ -358,8 +389,22 @@
 				'Kanban.Grid:onRender',
 				'Kanban.Grid:onItemDragStop',
 				'Kanban.Grid:onItemMoved',
-				'Kanban.Grid:onColumnLoadAsync',
-				'onPullEvent-crm',
+				'Kanban.Grid:onColumnLoadAsync'
+			].forEach(function (ev) {
+				try {
+					BX.addCustomEvent(ev, function () {
+						schedulePaint();
+					});
+				} catch (e) { /* ignore */ }
+			});
+			try {
+				BX.addCustomEvent('onPullEvent-crm', function (command, params) {
+					var ids = idsFromCrmPull(params);
+					if (ids.length) invalidateDeals(ids);
+					else schedulePaint();
+				});
+			} catch (e) { /* ignore */ }
+			[
 				'SidePanel.Slider:onCloseComplete',
 				'SidePanel.Slider:onClose',
 				'BX.Crm.EntityEditor:onSave',
@@ -375,20 +420,48 @@
 		}
 
 		document.addEventListener('visibilitychange', function () {
-			if (!document.hidden) {
-				cache = {};
-				schedulePaint();
-			}
+			if (!document.hidden) schedulePaint();
 		});
 	}
 
 	function observe() {
-		if (observed || !document.body) return;
-		observed = true;
-		var mo = new MutationObserver(function () {
-			schedulePaint();
+		if (observed) return;
+
+		function attach(root) {
+			if (observed || !root) return;
+			observed = true;
+			var mo = new MutationObserver(function (mutations) {
+				for (var i = 0; i < mutations.length; i++) {
+					if (mutations[i].addedNodes && mutations[i].addedNodes.length) {
+						schedulePaint();
+						return;
+					}
+				}
+			});
+			mo.observe(root, { childList: true, subtree: true });
+		}
+
+		var root = document.querySelector('.main-kanban, .crm-kanban');
+		if (root) {
+			attach(root);
+			return;
+		}
+		if (!document.body) return;
+		var wait = new MutationObserver(function () {
+			var k = document.querySelector('.main-kanban, .crm-kanban');
+			if (k) {
+				wait.disconnect();
+				attach(k);
+			}
 		});
-		mo.observe(document.body, { childList: true, subtree: true });
+		wait.observe(document.body, { childList: true, subtree: true });
+		setTimeout(function () {
+			try { wait.disconnect(); } catch (e) { /* ignore */ }
+			if (!observed) {
+				var k = document.querySelector('.main-kanban, .crm-kanban');
+				if (k) attach(k);
+			}
+		}, 8000);
 	}
 
 	function start() {
@@ -399,7 +472,6 @@
 		schedulePaint();
 		setTimeout(schedulePaint, 400);
 		setTimeout(schedulePaint, 1200);
-		setTimeout(invalidateVisible, 2500);
 	}
 
 	if (document.readyState === 'loading') {

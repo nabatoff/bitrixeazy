@@ -1,0 +1,100 @@
+#bx_left_menu_1897508225 .menu-item-icon,
+.menu-item-block[data-id="1897508225"] .menu-item-icon,
+.menu-item-block[data-link*="/marketplace/app/64"] .menu-item-icon,
+.wa-cc-menu-icon .menu-item-icon {
+	-webkit-mask-image: none !important;
+	mask-image: none !important;
+	background-image: url("/local/custom_chat/img/wa-menu.svg") !important;
+	background-repeat: no-repeat !important;
+	background-position: center !important;
+	background-size: 22px 22px !important;
+	background-color: transparent !important;
+	border-radius: 0 !important;
+	font-size: 0 !important;
+	line-height: 0 !important;
+	color: transparent !important;
+	overflow: hidden !important;
+	text-indent: 0 !important;
+}
+#bx_left_menu_1897508225:hover .menu-item-icon,
+#bx_left_menu_1897508225.menu-item-active .menu-item-icon,
+.menu-item-block[data-id="1897508225"]:hover .menu-item-icon,
+.menu-item-block[data-link*="/marketplace/app/64"]:hover .menu-item-icon,
+.wa-cc-menu-icon:hover .menu-item-icon,
+.wa-cc-menu-icon.menu-item-active .menu-item-icon {
+	background-color: transparent !important;
+	background-image: url("/local/custom_chat/img/wa-menu.svg") !important;
+}
+
+.wa-cc-menu-badge {
+	display: none;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 5px;
+	margin-left: 6px;
+	border-radius: 8px;
+	background: #f44336;
+	color: #fff;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 16px;
+	text-align: center;
+	vertical-align: middle;
+	flex-shrink: 0;
+}
+.wa-cc-menu-badge.is-on {
+	display: inline-block;
+}
+
+.wa-cc-toasts {
+	position: fixed;
+	left: 18px;
+	bottom: 22px;
+	z-index: 12000;
+	display: flex;
+	flex-direction: column-reverse;
+	gap: 8px;
+	pointer-events: none;
+	max-width: min(360px, calc(100vw - 24px));
+}
+.wa-cc-toast {
+	pointer-events: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 10px 14px 11px;
+	border-radius: 10px;
+	background: #111b21;
+	color: #fff;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, .28);
+	cursor: pointer;
+	border-left: 3px solid #25d366;
+	animation: waCcToastIn .18s ease-out;
+}
+.wa-cc-toast:hover { filter: brightness(1.08); }
+.wa-cc-toast-title {
+	font-size: 13px;
+	font-weight: 650;
+	line-height: 1.3;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.wa-cc-toast-text {
+	font-size: 13px;
+	line-height: 1.35;
+	color: rgba(255, 255, 255, .82);
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+.wa-cc-toast-hint {
+	margin-top: 2px;
+	font-size: 11px;
+	color: #25d366;
+}
+@keyframes waCcToastIn {
+	from { opacity: 0; transform: translateY(10px); }
+	to { opacity: 1; transform: translateY(0); }
+}

@@ -1,0 +1,122 @@
+UF_DEFAULT
+type=boolean mandatory=N default={"DEFAULT_VALUE":0,"DISPLAY":"RADIO","LABEL":["",""],"LABEL_CHECKBOX":"\u041f\u0440\u0435\u0434\u043e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430"}
+
+BP_STATE
+{"ID":"6a8c05044cb277.26424361","WORKFLOW_TEMPLATE_ID":"314","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0504405ae3.72425263","WORKFLOW_TEMPLATE_ID":"390","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0504384f28.72911709","WORKFLOW_TEMPLATE_ID":"389","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c05042fcb25.43600423","WORKFLOW_TEMPLATE_ID":"388","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c05042b5ef0.18875945","WORKFLOW_TEMPLATE_ID":"387","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0504233f24.33934497","WORKFLOW_TEMPLATE_ID":"386","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c05041d7628.35564394","WORKFLOW_TEMPLATE_ID":"385","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c050417a938.43641399","WORKFLOW_TEMPLATE_ID":"384","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0504114af2.83206771","WORKFLOW_TEMPLATE_ID":"383","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c05040ac498.87069800","WORKFLOW_TEMPLATE_ID":"382","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0504047cb5.68117895","WORKFLOW_TEMPLATE_ID":"381","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503f29d25.60830285","WORKFLOW_TEMPLATE_ID":"380","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503ed4839.31229439","WORKFLOW_TEMPLATE_ID":"379","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503e82d08.07440259","WORKFLOW_TEMPLATE_ID":"378","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503e1daa5.79653550","WORKFLOW_TEMPLATE_ID":"377","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503dccc90.25510592","WORKFLOW_TEMPLATE_ID":"359","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503d694a1.34016786","WORKFLOW_TEMPLATE_ID":"357","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503d12619.50588386","WORKFLOW_TEMPLATE_ID":"356","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503ca8003.51441630","WORKFLOW_TEMPLATE_ID":"355","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+{"ID":"6a8c0503c47a37.86086219","WORKFLOW_TEMPLATE_ID":"354","STATE":"Completed","STATE_TITLE":"Завершен","MODIFIED":{}}
+
+BP_TEMPLATES_USED
+{"WORKFLOW_TEMPLATE_ID":"285","NAME":"1. Тип сделки","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"309","NAME":"Шаблон автоматизации (C17:NEW)","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":"C17:NEW"}
+{"WORKFLOW_TEMPLATE_ID":"293","NAME":"3. Запрос на закуп без предоплаты","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"294","NAME":"2.2. Предоплата получена","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"295","NAME":"3.1. Одобрена без предоплаты","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"296","NAME":"4. Заказ на закупе Алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"297","NAME":"5. Закуплено полностью или с изменениями?","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"299","NAME":"Запрос на выдачу товара без полной оплаты","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"300","NAME":"7. Выдача товара без полной оплаты разрешена","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"301","NAME":"10. Запрет в Закуп Алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"302","NAME":"8. Запрет на Выдачу алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"303","NAME":"11. Запрет Успешно алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"304","NAME":"2. Запрошен счет","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"305","NAME":"9. Запрет кладовщика Алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"307","NAME":"2.1. Счет выставлен","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"322","NAME":"4. Заказ на закупе Алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"323","NAME":"4. Заказ на закупе Астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"324","NAME":"4. Заказ на закупе Астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"325","NAME":"4. Заказ на закупе Уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"326","NAME":"4. Заказ на закупе Уральск комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"332","NAME":"8. Запрет на Выдачу алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"333","NAME":"8. Запрет на Выдачу астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"334","NAME":"8. Запрет на Выдачу астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"335","NAME":"8. Запрет на Выдачу уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"336","NAME":"8. Запрет на Выдачу уральск комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"337","NAME":"9. Запрет кладовщика Алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"338","NAME":"9. Запрет кладовщика Астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"339","NAME":"9. Запрет кладовщика Астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"340","NAME":"9. Запрет кладовщика Уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"341","NAME":"9. Запрет кладовщика уральск комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"342","NAME":"10. Запрет в Закуп Алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"343","NAME":"10. Запрет в Закуп Астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"344","NAME":"10. Запрет в Закуп Астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"345","NAME":"10. Запрет в Закуп Уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"346","NAME":"10. Запрет в Закуп Уральск комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"347","NAME":"11. Запрет Успешно алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"348","NAME":"11. Запрет Успешно астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"349","NAME":"11. Запрет Успешно астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"350","NAME":"11. Запрет Успешно уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"351","NAME":"11. Запрет Успешно уральск комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"352","NAME":"Уведомление заказ выдан","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"354","NAME":"изменение поля Счет выставлен","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"355","NAME":"изменение поля закупщик взял в работу","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"356","NAME":"уведомление полная оплата получена","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"357","NAME":"выдача без полной оплаты не разпешена","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"359","NAME":"изменение суммы на полную сумму","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"377","NAME":"изменение поля кладовщик взял в работу","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"378","NAME":"тест уведомление бух","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"379","NAME":"Заказ-выдан-бухгалтеру алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"380","NAME":"Заказ-выдан-кладовщику алматы срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"381","NAME":"Заказ-выдан-бухгалтеру алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"382","NAME":"Заказ-выдан-кладовщик алматы комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"383","NAME":"Заказ-выдан-бухгалтеру астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"384","NAME":"Заказ-выдан- кладовщику астана срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"385","NAME":"Заказ-выдан- бух астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"386","NAME":"Заказ-выдан-кладовщик астана комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"387","NAME":"Заказ-выдан- бух уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"388","NAME":"Заказ-выдан- кладовщик уральск срез","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"389","NAME":"Заказ-выдан- бух уральск комнатка","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"390","NAME":"Заказ-выдан- кладовщик уральск комнатные","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":null}
+{"WORKFLOW_TEMPLATE_ID":"314","NAME":"Шаблон автоматизации (C17:PREPARATION)","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":"C17:PREPARATION"}
+{"WORKFLOW_TEMPLATE_ID":"361","NAME":"Шаблон автоматизации (C17:PREPAYMENT_INVOIC)","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":"C17:PREPAYMENT_INVOIC"}
+{"WORKFLOW_TEMPLATE_ID":"362","NAME":"Шаблон автоматизации (C17:EXECUTING)","MODULE_ID":"crm","ENTITY":"CCrmDocumentDeal","DOCUMENT_STATUS":"C17:EXECUTING"}
+
+TRACKING_SETFIELD
+
+TRACKING_ALL_TYPES
+type=1 n=21
+type=2 n=21
+
+TRACKING_LAST
+26071636 t=2 Template Bizproc Automation template | 
+26071635 t=2 A32771_23937_16994_17672 Параллельное выполнение | 
+26071634 t=2 A75538_11219_34777_81829 Automation sequence | 
+26071633 t=2 A93648_22677_10873_43761 Добавить комментарий в элемент | 
+26071632 t=1 A93648_22677_10873_43761 Добавить комментарий в элемент | 
+26071631 t=2 A18933_50340_10916_11842 Automation sequence | 
+26071630 t=2 A77534_36425_11111_57055 Изменить элемент  (Копия)  (Копия) | 
+26071629 t=1 A77534_36425_11111_57055 Изменить элемент  (Копия)  (Копия) | 
+26071628 t=1 A75538_11219_34777_81829 Automation sequence | 
+26071627 t=1 A18933_50340_10916_11842 Automation sequence | 
+26071626 t=1 A32771_23937_16994_17672 Параллельное выполнение | 
+26071625 t=1 Template Bizproc Automation template | 
+26071177 t=2 Template Bizproc Automation template | 
+26071176 t=2 A54004_85063_21255_46158 Параллельное выполнение | 
+26071175 t=2 A26164_43301_50624_66190 Automation sequence | 
+26071174 t=2 A22104_94109_96370_40855 Изменить элемент  (Копия)  (Копия) | 
+26071173 t=1 A22104_94109_96370_40855 Изменить элемент  (Копия)  (Копия) | 
+26071172 t=2 A95495_76704_16752_47984 Automation sequence | 
+26071171 t=1 A95495_76704_16752_47984 Automation sequence | 
+26071170 t=1 A26164_43301_50624_66190 Automation sequence | 
+26071169 t=1 A54004_85063_21255_46158 Параллельное выполнение | 
+26071168 t=1 Template Bizproc Automation template | 
+26070928 t=2 Template Bizproc Automation template | 
+26070927 t=2 A33568_66047_17839_83803 Параллельное выполнение | 
+26070926 t=2 A41716_73202_32710_77125 Automation sequence | 

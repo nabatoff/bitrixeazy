@@ -1,0 +1,603 @@
+==== FILES ====
+ls: cannot access /home/bitrix/www/bitrix/php_interface/admin/dealstageguard_fields.php: No such file or directory
+-rw-r--r-- 1 bitrix bitrix 59783 Aug 19 13:15 /home/bitrix/www/bitrix/php_interface/classes/DealStageGuard.php
+-rw-rw-r-- 1 bitrix bitrix  6017 Aug 21 16:19 /home/bitrix/www/local/crm/deal_uf_lock.js
+-rw-rw-r-- 1 bitrix bitrix  5863 Aug 21 16:56 /home/bitrix/www/local/crm/include_deal_uf_lock.php
+deal_uf_lock.js
+include_deal_auto_take.php
+include_deal_uf_history.php
+include_deal_uf_lock.php
+include_kanban_deal_paint.php
+kanban_deal_paint_ajax.php
+kanban_deal_paint.css
+kanban_deal_paint.js
+
+==== DSG OPTION dsg_field_permissions ====
+len=3455
+fields=25
+UF_CRM_1764332847245 | Предоплата получена | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1764577842986 | Полная оплата за поставку получена | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1784532842739 | Номер накладной | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1784636341021 | Счет выставлен | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1784802244742 | Запрос на выдачу товара без полной оплаты | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1785324070 | Бухгалтер который работает со сделкой | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1785326361467 | Взято в работу бухгалтером | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1785758618 | Итоговая сумма сделки | users=[50,75,251937] | deps=[242,245,248]
+UF_CRM_1783485774093 | Взят в работу закупщиком | users=[50,75,251937] | deps=[243,246,249]
+UF_CRM_1783486791226 | Закуплено полностью или с изменениями? | users=[50,75,251937] | deps=[243,246,249]
+UF_CRM_1783487251339 | Укажите комментарий какие изменения произошли в закупе | users=[50,75,251937] | deps=[243,246,249]
+UF_CRM_1785325552 | Закупщик который работает со сделкой | users=[50,75,251937] | deps=[243,246,249]
+UF_CRM_1784524115744 | Заказ выдан | users=[50,75,251937] | deps=[244,247,250]
+UF_CRM_1785755255584 | Комментарий по выдаче | users=[50,75,251937] | deps=[244,247,250]
+UF_CRM_1786008089 | Одобрено без предоплаты | users=[50,75,251937] | deps=[]
+UF_CRM_1786008172 | Выдача товара без полной оплаты разрешена | users=[50,75,251937] | deps=[]
+UF_CRM_1731673902240 | Город опт Алматы | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1738756137450 | Город опт Уральск | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1738756334225 | Город опт Астана | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1750940585581 | Маркировка | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1764577192130 | Запрос одобрения на закуп без предоплаты | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1764578603013 | Запросить выставление счета | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1782797821314 | Дата доставки заказа | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1782798174634 | Страна заказа | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+UF_CRM_1785755137079 | Комментарий к маркировке | users=[50,75,251937] | deps=[251,252,253,254,255,256]
+
+==== HANDLERS Deal Add/Update ====
+OnBeforeCrmDealAdd => (none)
+OnAfterCrmDealAdd => callable sort=100 | \Bitrix\Intranet\UStat\CrmEventHandler::onAfterCrmDealAddEvent sort=100 | \Bitrix\Rest\Event\Callback::crm__ONAFTERCRMDEALADD sort=100
+OnBeforeCrmDealUpdate => DealStageGuard::onBeforeUpdateLegacy sort=100 | callable sort=100 | callable sort=100 | callable sort=100
+OnAfterCrmDealUpdate => callable sort=100 | \Bitrix\Voximplant\Integration\Crm\EventHandler::onAfterDealUpdate sort=100 | \Bitrix\Rest\Event\Callback::crm__ONAFTERCRMDEALUPDATE sort=100
+OnBeforeCrmLeadAdd => (none)
+OnAfterCrmLeadAdd => \Bitrix\Intranet\UStat\CrmEventHandler::onAfterCrmLeadAddEvent sort=100 | \Bitrix\Rest\Event\Callback::crm__ONAFTERCRMLEADADD sort=100
+OnBeforeCrmLeadUpdate => (none)
+ORM \Bitrix\Crm\DealTable::OnBeforeAdd registered? (see dump below)
+ORM \Bitrix\Crm\DealTable::OnAfterAdd registered? (see dump below)
+ORM \Bitrix\Crm\DealTable::OnBeforeUpdate registered? (see dump below)
+ORM \Bitrix\Crm\Item::onBeforeAdd registered? (see dump below)
+
+==== FACTORY / CONVERTER CLASSES ====
+Bitrix\Crm\Conversion\DealConversionWizard YES
+Bitrix\Crm\Conversion\LeadConversionWizard YES
+Bitrix\Crm\Conversion\EntityConversionWizard YES
+CCrmLeadConverter NO
+Bitrix\Crm\Service\Operation\Add YES
+Bitrix\Crm\Service\Operation\Update YES
+
+==== USER 69 DEPT vs PERMS (sample manager) ====
+69 Динара Айтенова groups=3,4,12,14,2
+dept=[251]
+
+==== SAMPLE CREATE DEALS TODAY: prepay at DATE_CREATE ====
+Mysql query error: (1054) Unknown column 'd.CREATED_BY' in 'field list'
+
+==== LEAD_ID filled among C17 today ====
+{"FROMLEAD":"5","CNT":"34"}
+
+
+==== DSG PHP EXTRACT ====
+bytes 48915 lines 1092
+
+===== register() add hooks snippet =====
+public static function register()
+    {
+        try {
+            AddEventHandler('crm', 'OnBeforeCrmDealUpdate', ['DealStageGuard', 'onBeforeUpdateLegacy']);
+        } catch (\Throwable $e) {
+            self::log('[init] legacy hook FAILED: ' . $e->getMessage());
+        }
+
+        try {
+            if (!class_exists('\Bitrix\Main\Loader') || !\Bitrix\Main\Loader::includeModule('crm')) {
+                return;
+            }
+            if (!class_exists('\Bitrix\Crm\DealTable')) {
+                return;
+            }
+            // Правильный способ подписки на ORM-событие в Битриксе — через
+            // EventManager с именем события "ИмяКласса::OnBeforeUpdate",
+            // а не прямым вызовом метода у объекта сущности (его там нет).
+            \Bitrix\Main\EventManager::getInstance()->addEventHandler(
+                'crm',
+                '\Bitrix\Crm\DealTable::OnBeforeUpdate',
+                ['DealStageGuard', 'onBeforeUpdateOrm']
+            );
+        } catch (\Throwable $e) {
+            self::log('[init] orm hook FAILED: ' . $e->getMessage());
+        }
+
+        // ВРЕМЕННО ОТКЛЮЧЕНО по просьбе пользователя (17.08) — проверка
+        // контакта/компании (создание сделки) пока не нужна, работа над
+        // ней приостановлена. Стадийная логика (evaluate()) не затронута.
+        // Раскомментировать, когда продолжим:
+        // try {
+        //     AddEventHandler('crm', 'OnBeforeCrmDealAdd', ['DealStageGuard', 'onBeforeAddLegacy']);
+        // } catch (\Throwable $e) {
+        //     self::log('[init] add-legacy hook FAILED: ' . $e->getMessage());
+        // }
+        //
+        // try {
+        //     if (class_exists('\Bitrix\Main\Loader') && \Bitrix\Main\Loader::includeModule('crm')
+        //         && class_exists('\Bitrix\Crm\DealTable')) {
+        //         \Bitrix\Main\EventManager::getInstance()->addEventHandler(
+        //             'crm',
+        //             '\Bitrix\Crm\DealTable::OnBeforeAdd',
+        //             ['DealStageGuard', 'onBeforeAddOrm']
+        //         );
+        //     }
+        // } catch (\Throwable $e) {
+        //     self::log('[init] add-orm hook FAILED: ' . $e->getMessage());
+        // }
+
+        try {
+            AddEventHandler('main', 'OnEpilog', ['DealStageGuard', 'printReloadListener']);
+        } catch (\Throwable $e) {
+            self::log('[init] epilog hook FAILED: ' . $e->getMessage());
+        }
+    }
+
+    // Некоторые виджеты Битрикса (карточка сделки, клик по плашке стадии)
+    // не показывают текст ошибки и не откатывают карточку визуально после
+    // блокировки — сделка "зависает" на неверной стадии до ручной
+    // перезагрузки. Чтобы не гадать про внутренности каждого виджета,
+    // подписываемся на тот же pull-канал, что уже используется для
+    // push-уведомлений, и просто перезагружаем страницу сделки, если
+    // блокировка коснулась именно открытой сейчас сделки.
+    public static function printReloadListener()
+    {
+        try {
+            if (strpos($_SERVER['REQUEST_URI'] ?? '', '/crm/deal/') === false) {
+                return;
+            }
+            ?>
+<script>
+(function() {
+    if (typeof BX === 'undefined' || typeof BX.addCustomEvent !== 'function') {
+        return;
+    }
+    // Pull-соединение общее на все открытые фреймы/вкладки (через
+    // SharedWorker), поэтому один и тот же сигнал долетает и до фрейма
+    // слайдера, и до родительской страницы позади него. Обрабатываем
+    // только в самом верхнем окне — иначе оба обработчика реагируют
+    // одновременно, и после мягкого обновления слайдера следом
+    // срабатывает ещё и полная перезагрузка страницы.
+    if (window.self !== window.top) {
+        return;
+    }
+
+    // Никакого своего попапа с полями больше нет: слишком много
+    // особенностей конкретной CRM-конфигурации, которые надёжно умеет
+    // обрабатывать только сама карточка Битрикса (списки со своими
+    // значениями, поиск/создание компании и т.п.). Вместо этого просто
+    // открываем штатную карточку контакта в боковом слайдере — дальше
+    // всё стандартное битриксовское: правильные поля, валидация, сохранение.
+    function dealStageGuardOpenNative(contactId) {
+        try {
+            var
+
+===== evaluateFieldEditPermissions FULL =====
+function evaluateFieldEditPermissions($id, array $incomingFields, $tag)
+    {
+        try {
+            $permissions = self::getFieldEditPermissions();
+            if (empty($permissions)) {
+                return null;
+            }
+
+            // Пересекаем конфиг с реально пришедшими полями — чтобы не
+            // делать лишний CCrmDeal::GetByID(), если ни одно защищённое
+            // поле в это сохранение вообще не входит.
+            $fieldsToCheck = array_intersect_key($permissions, $incomingFields);
+            if (empty($fieldsToCheck)) {
+                return null;
+            }
+
+            global $USER;
+            $userId = (isset($USER) && is_object($USER)) ? (int)$USER->GetId() : 0;
+
+            // Сохранение без определённого "живого" пользователя — робот
+            // бизнес-процесса, REST/вебхук-интеграция, консольный скрипт.
+            // Сознательно НЕ блокируем: эта проверка про конкретных людей,
+            // которым запрещено трогать поле руками, а не про автоматизацию,
+            // о существовании которой владелец может даже не знать. Файл уже
+            // переживал прод-инцидент из-за слишком агрессивных блокировок —
+            // блокировать неизвестно кого "на всякий случай" рискованнее,
+            // чем один раз пропустить.
+            if ($userId <= 0) {
+                self::log("[$tag]   field-permissions: нет активного пользователя (userId=0), пропускаем проверку (робот/API)");
+                return null;
+            }
+
+            // Администраторы всегда могут править любое защищённое поле —
+            // подстраховка на случай ошибки в конфиге (опечатка в ID),
+            // чтобы не отрезать самим себе доступ к исправлению настроек.
+            try {
+                if (class_exists('\CUser')) {
+                    $adminGroups = \CUser::GetUserGroup($userId);
+                    if (is_array($adminGroups) && in_array(1, $adminGroups, false)) {
+                        return null;
+                    }
+                }
+            } catch (\Throwable $e) {
+                self::log('[field-permissions] admin check EXCEPTION: ' . $e->getMessage());
+            }
+
+            $deal = \CCrmDeal::GetByID($id, false);
+            if (!$deal) {
+                return null;
+            }
+
+            $userDepartments = null; // лениво: тянем только если реально понадобится
+            $blockedLabels = [];
+
+            foreach ($fieldsToCheck as $field => $spec) {
+                $newValue = $incomingFields[$field];
+
+                // CCrmDeal::GetByID() кастомные поля UF_CRM_* не отдаёт вовсе
+                // (та же особенность, что и у CCrmContact::GetByID — уже
+                // встречалась в этом файле для контакта/компании). Без этого
+                // "старое значение" для любого кастомного поля всегда читалось
+                // бы как null, и оно ложно считалось бы изменившимся при
+                // каждом сохранении, где вообще присутствует в запросе —
+                // именно из-за этого блокировался сразу весь список полей.
+                if (strpos($field, 'UF_') === 0) {
+                    $oldValue = self::getUfFieldValue('\Bitrix\Crm\DealTable', $id, $field);
+                } else {
+                    $oldValue = $deal[$field] ?? null;
+                }
+
+                // Значения полей сделки (в т.ч. UF_CRM_*) в этом конфиге
+                // всегда скалярны. Если прилетел массив (мультиполе по
+                // ошибке в конфиге и т.п.) — не наша забота здесь, просто
+                // пропускаем поле, а не пытаемся сравнивать/блокировать вслепую.
+                if (is_array($newValue) || is_array($oldValue)) {
+                    continue;
+                }
+
+                // Сравниваем "мягко". При редактировании ОДНОГО поля в
+                // интерфейсе Битрикс иногда попутно присылает и другие поля
+                // сделки — без нормализации они могли ложно выглядеть
+                // "изменившимися" из-за разницы в формате и лишний раз
+                // попадать в список блокировки, хотя пользователь их вообще
+                // не трогал. На практике встретился конкретный случай:
+                // старое значение '0' (из ORM) и присланное 'N' — для
+                // Да/Нет-поля это одно и то же состояние "не отмечено", но
+                // как строки они не совпадали. Поэтому пустую строку, null,
+                // '0' и 'N' (без учёта регистра) считаем одним и тем же
+                // "выключенным" состоянием, а '1' и 'Y' — одним "включённым".
+                // Для всего остального (даты, числа, текст) сравнение
+                // остаётся обычным точным.
+                $normalizeValue = function ($v) {
+                    $v = $v === null ? '' : trim((string)$v);
+                    if ($v === '' || $v === '0' || strcasecmp($v, 'N') === 0) {
+                        return "\0OFF";
+                    }
+                    if ($v === '1' || strcasecmp($v, 'Y') === 0) {
+                        return "\0ON";
+                    }
+                    return $v;
+                };
+                $normalizedNew = $normalizeValue($newValue);
+                $normalizedOld = $normalizeValue($oldValue);
+                if ($normalizedNew === $normalizedOld) {
+                    continue; // значение реально не меняется
+                }
+
+                $allowedUsers = isset($spec['users']) && is_array($spec['users']) ? $spec['users'] : [];
+                $allowedDepartments = isset($spec['departments']) && is_array($spec['departments']) ? $spec['departments'] : [];
+
+                $allowed = in_array($userId, $allowedUsers, false);
+
+                // Подразделение сравниваем только "в лоб", без учёта
+                // вложенности (родитель/дочерние отделы) — для целей этой
+                // проверки этого достаточно, усложнять пока нет запроса.
+                if (!$allowed && !empty($allowedDepartments)) {
+                    if ($userDepartments === null) {
+                        try {
+                            $userRow = class_exists('\CUser') ? \CUser::GetByID($userId)->Fetch() : false;
+                            $userDepartments = (is_array($userRow) && is_array($userRow['UF_DEPARTMENT'] ?? null))
+                                ? array_map('intval', $userRow['UF_DEPARTMENT'])
+                                : [];
+                        } catch (\Throwable $e) {
+                            self::log('[field-permissions] UF_DEPARTMENT EXCEPTION: ' . $e->getMessage());
+                            $userDepartments = [];
+                        }
+                        // Диагностика: чтобы сразу увидеть, действительно ли
+                        // не совпадают ID подразделений (например, если в
+                        // конфиге выбран другой "Отдел бухгалтерии" из другой
+                        // компании холдинга) или UF_DEPARTMENT вообще не
+                        // читается у пользователя.
+                        self::log("[$tag]   field-permissions: user #$userId departments=" . implode(',', $userDepartments)
+                            . '; raw UF_DEPARTMENT=' . var_export($userRow['UF_DEPARTMENT'] ?? null, true));
+                    }
+                    self::log("[$tag]   field-permissions: allowed departments for $field=" . implode(',', $allowedDepartments));
+                    $allowed = !empty(array_intersect($allowedDepartments, $userDepartments));
+                }
+
+                if (!$allowed) {
+                    $label = (isset($spec['label']) && $spec['label'] !== '') ? $spec['label'] : $field;
+                    $blockedLabels[] = $label;
+                    self::log("[$tag]   field-permissions: user #$userId NOT allowed to change $field ($label): '"
+                        . (string)$oldValue . "' => '" . (string)$newVa
+
+===== onBeforeAddLegacy + onBeforeAddOrm =====
+function onBeforeAddLegacy(&$arFields)
+    {
+        global $APPLICATION;
+
+        $contactId = $arFields['CONTACT_ID'] ?? null;
+        $companyId = $arFields['COMPANY_ID'] ?? null;
+
+        $error = self::evaluateClientFields(0, $contactId, $companyId, 'add-legacy');
+        if ($error !== null) {
+            $APPLICATION->ThrowException($error);
+            return false;
+        }
+
+        return true;
+    }
+
+    // Создание сделки, ORM-путь (аналогично onBeforeAddLegacy, но для форм,
+    // идущих через DealTable вместо CCrmDeal::Add()).
+    // ВРЕМЕННО ОТКЛЮЧЕНО по просьбе пользователя (17.08) — хук не
+    // зарегистрирован в register(), этот метод сейчас не вызывается.
+    public static function onBeforeAddOrm($event)
+    {
+        $result = new \Bitrix\Main\ORM\EventResult();
+
+        try {
+            $fields = $event->getParameter('fields');
+            if (empty($fields) || !is_array($fields)) {
+                return $result;
+            }
+
+            $contactId = $fields['CONTACT_ID'] ?? null;
+            $companyId = $fields['COMPANY_ID'] ?? null;
+
+            $error = self::evaluateClientFields(0, $contactId, $companyId, 'add-orm');
+            if ($error !== null) {
+                $result->addError(new \Bitrix\Main\Error($error));
+            }
+        } catch (\Throwable $e) {
+            self::log('[add-orm] EXCEPTION: ' . $e->getMessage());
+        }
+
+        return $result;
+    }
+
+    // Новый путь (в т.ч. форма "заполните обязательные поля").
+    // Без типизации параметра намеренно — чтобы не зависеть от точного
+    // названия класса события в конкретной версии ядра.
+    public static function onBeforeUpdateOrm($event)
+    {
+        $result = new \Bitrix\Main\ORM\EventResult();
+
+        try {
+            $primary = $event->getParameter('id');
+            $id = is_array($primary) ? (int)reset($primary) : (int)$primary;
+            $fields = $event->getParameter('fields');
+
+            if ($id <= 0 || empty($fields) || !is_array($fields)) {
+                return $result;
+            }
+
+            $permError = self::evaluateFieldEditPermissions($id, $fields, 'orm');
+            if ($permError !== null) {
+                $result->addError(new \Bitrix\Main\Error($permError));
+                return $result;
+            }
+
+            $error = self::evaluate($id, $fields, 'orm');
+            if ($error !== null) {
+                $result->addError(new \Bitrix\Main\Error($error));
+                return $result;
+            }
+
+            // ВРЕМЕННО ОТКЛЮЧЕНО по просьбе пользователя (17.08) — см. пометку в register().
+            // $clientError = self::evaluateClientFieldsOnChange($id, $fields, 'orm');
+            // if ($clientError !== null) {
+            //     $result->addError(new \Bitrix\Main\Error($clientError));
+        
+
+===== printReloadListener field lock JS? =====
+dealstageguard in js True False
+
+
+==== ADMIN UI + JS LOCK ====
+
+deal_uf_lock.js
+include_deal_auto_take.php
+include_deal_uf_history.php
+include_deal_uf_lock.php
+include_kanban_deal_paint.php
+kanban_deal_paint_ajax.php
+kanban_deal_paint.css
+kanban_deal_paint.js
+--- lock js ---
+208 /home/bitrix/www/local/crm/deal_uf_lock.js
+194:		var style = document.createElement('style');
+
+
+==== LOCK JS + DSG JS MENTIONS ====
+exists True size 6017
+/**
+ * Read-only UF на карточке/канбане сделки для не-админов.
+ * Список полей: window.__WA_DEAL_UF_LOCK
+ */
+(function () {
+	'use strict';
+
+	var FIELDS = Array.isArray(window.__WA_DEAL_UF_LOCK) ? window.__WA_DEAL_UF_LOCK : [];
+	if (!FIELDS.length) return;
+
+	var locked = {};
+	FIELDS.forEach(function (n) { locked[String(n)] = 1; });
+
+	function markNode(node) {
+		if (!node || !node.classList) return;
+		node.classList.add('wa-deal-uf-locked');
+		try {
+			node.style.setProperty('pointer-events', 'none', 'important');
+			node.style.setProperty('cursor', 'default', 'important');
+			node.style.setProperty('opacity', '0.92');
+		} catch (e) {
+			node.style.pointerEvents = 'none';
+		}
+	}
+
+	function lockControl(control) {
+		if (!control) return;
+		try {
+			if (typeof control.setEditable === 'function') {
+				control.setEditable(false);
+			}
+		} catch (e1) { /* ignore */ }
+		try {
+			control._isEditable = false;
+			control._isEditInViewEnabled = false;
+		} catch (e2) { /* ignore */ }
+		try {
+			var scheme = control.getSchemeElement ? control.getSchemeElement() : control._schemeElement;
+			if (scheme) {
+				if (typeof scheme.setEditable === 'function') scheme.setEditable(false);
+				scheme._isEditable = false;
+				if (typeof scheme.setData === 'function') {
+					var data = scheme.getData ? (scheme.getData() || {}) : {};
+					data.enableEditInView = false;
+					scheme.setData(data);
+				}
+			}
+		} catch (e3) { /* ignore */ }
+		try {
+			var wrap = control.getWrapper ? control.getWrapper() : (control._wrapper || null);
+			markNode(wrap);
+		} catch (e4) { /* ignore */ }
+	}
+
+	function walkControls(editor) {
+		if (!editor) return;
+		var list = [];
+		try {
+			if (typeof editor.getControls === 'function') {
+				list = editor.getControls() || [];
+			}
+		} catch (e) { list = []; }
+
+		function visit(ctrl) {
+			if (!ctrl) return;
+			var id = '';
+			try {
+				id = String(
+					(ctrl.getId && ctrl.getId()) ||
+					(ctrl.getName && ctrl.getName()) ||
+					ctrl.getId() ||
+					''
+				);
+			} catch (e) {
+				id = '';
+			}
+			if (id && locked[id]) {
+				lockControl(ctrl);
+			}
+			var children = [];
+			try {
+				if (typeof ctrl.getChildren === 'function') {
+					children = ctrl.getChildren() || [];
+				} else if (typeof ctrl.getChildControls === 'function') {
+					children = ctrl.getChildControls() || [];
+				} else if (typeof ctrl.getControls === 'function') {
+					children = ctrl.getControls() || [];
+				} else if (ctrl._controls) {
+					children = ctrl._controls;
+				}
+			} catch (e2) { children = []; }
+			if (children && children.length) {
+				for (var i = 0; i < children.length; i++) visit(children[i]);
+			}
+		}
+
+		for (var i = 0; i < list.length; i++) visit(list[i]);
+
+		FIELDS.forEach(function (name) {
+			try {
+				if (typeof editor.getControlById === 'function') {
+					lockControl(editor.getControlById(name));
+				}
+				if (typeof editor.getControlByIdRecursive === 'function') {
+					lockControl(editor.getControlByIdRecursive(name));
+				}
+			} catch (e) { /* ignore */ }
+		});
+	}
+
+	function findEditors() {
+		var out = [];
+		try {
+			if (window.BX && BX.Crm && BX.Crm.EntityEditor) {
+				if (typeof BX.Crm.EntityEditor.getDefault === 'function') {
+					var d = BX.Crm.EntityEditor.getDefault();
+					if (d) out.push(d);
+				}
+				if (BX.Crm.EntityEditor.items) {
+					Object.keys(BX.Crm.EntityEditor.items).forEach(function (k) {
+						out.push(BX.Crm.EntityEditor.items[k]);
+					});
+				}
+			}
+		} catch (e) { /* ignore */ }
+		try {
+			if (window.BX && BX.UI && BX.UI.EntityEditor) {
+				if (typeof BX.UI.EntityEditor.getDefault === 'function') {
+					var u = BX.UI.EntityEditor.getDefault();
+					if (u) out.push(u);
+				}
+				if (BX.UI.EntityEditor.items) {
+					Object.keys(BX.UI.EntityEditor.items).forEach(function (k) {
+						out.push(BX.UI.EntityEditor.items[k]);
+					});
+				}
+			}
+		} catch (e2) { /* ignore */ }
+		return out;
+	}
+
+	function lockDomFallbacks() {
+		FIELDS.forEach(function (name) {
+			var nodes = document.querySelectorAll(
+				'[data-cid="' + 
+
+===== grep DSG js inject =====
+field-permissions 8
+disabled 0
+readonly 0
+EDITOR 0
+entity-editor 0
+create 0
+L 309 field-permissions] config read EXCEPTION: ' . $e->getMessage()); |             return []; |         } |     } |  |     // Ограничивает изменение конкретных полей сделки с
+L 348 field-permissions: нет активного пользователя (userId=0), пропускаем проверку (робот/API)"); |                 return null; |             } |  |             // Админист
+L 363 field-permissions] admin check EXCEPTION: ' . $e->getMessage()); |             } |  |             $deal = \CCrmDeal::GetByID($id, false); |             if (!$deal) { |   
+L 443 field-permissions] UF_DEPARTMENT EXCEPTION: ' . $e->getMessage()); |                             $userDepartments = []; |                         } |                 
+L 451 field-permissions: user #$userId departments=" . implode(',', $userDepartments) |                             . '; raw UF_DEPARTMENT=' . var_export($userRow['UF_D
+L 454 field-permissions: allowed departments for $field=" . implode(',', $allowedDepartments)); |                     $allowed = !empty(array_intersect($allowedDepartme
+L 461 field-permissions: user #$userId NOT allowed to change $field ($label): '" |                         . (string)$oldValue . "' => '" . (string)$newValue . "'"); |   
+L 480 field-permissions] EXCEPTION: ' . $e->getMessage()); |             return null; // сбой самой проверки не должен блокировать сохранение |         } |     } |  |     // Шл
+
+
+==== INIT + JS FILES ====
+after_connect_d7.bak.php
+after_connect_d7.php
+classes
+cron_events.php
+dbconn.php
+ff111.log
+fff.log
+ff.log
+include
+init.php
+subscribe
+---
+449:require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/php_interface/classes/DealStageGuard.php');
+450:\DealStageGuard::register();
+--- other field js ---
+/home/bitrix/www/local/crm/deal_uf_lock.js
+/home/bitrix/www/local/crm/kanban_deal_paint.js
+/home/bitrix/www/local/admin/dealstageguard_fields.php
+/home/bitrix/www/bitrix/php_interface/classes/DealStageGuard.php

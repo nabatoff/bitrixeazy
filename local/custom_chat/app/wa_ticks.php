@@ -416,8 +416,8 @@ function waCcTicksBestForKeysWithPoll(array $keys, $lineId = 0, $force = false)
 {
 	$row = waCcTicksBestForKeys($keys);
 	if ((int)$lineId > 0) {
-		/* force (открытый чат / после send): poll каждые 3с; иначе 12с */
-		waCcTicksPollLine((int)$lineId, $force ? 60 : 180, $force ? 3 : 12);
+		/* force (открытый чат / после send): poll каждые 8с; иначе 20с */
+		waCcTicksPollLine((int)$lineId, $force ? 60 : 180, $force ? 8 : 20);
 		$row = waCcTicksBestForKeys($keys);
 	}
 	return $row;

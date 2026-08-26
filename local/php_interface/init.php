@@ -34,4 +34,9 @@
  *   if (is_file($waDealUfHist)) {
  *       require_once $waDealUfHist;
  *   }
+ *
+ *   $afSpMenu = $_SERVER['DOCUMENT_ROOT'] . '/local/sales_plan/include_menu.php';
+ *   if (is_file($afSpMenu)) {
+ *       require_once $afSpMenu;
+ *   }
  */

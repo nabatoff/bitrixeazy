@@ -1,0 +1,121 @@
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SocialNetwork\ProcessAdd(),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SocialNetwork\ProcessSendNotification\WhenAddingEntity(),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SendEvent('OnAfterCrmDealAdd'),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SendEvent\ExternalAdd('OnAfterExternalCrmDealAdd'),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SendEvent\ProductRowsSave('OnAfterCrmDealProductRowsSave'),
+			)
+		;
+
+		if ($this->isInventoryManagementEnabled())
+		{
+			$operation
+				->addAction(
+					Operation::ACTION_BEFORE_SAVE,
+					new Reservation\Actions\CheckProductsOnAdd()
+				)
+				->addAction(
+					Operation::ACTION_BEFORE_SAVE,
+					new Reservation\Actions\PrepareReservationFieldsOnAdd()
+				)
+				->addAction(
+					Operation::ACTION_AFTER_SAVE,
+					new Reservation\Actions\SynchronizeReservesOnAdd()
+				)
+				->addAction(
+					Operation::ACTION_AFTER_SAVE,
+					new Reservation\Actions\ProcessInventoryManagementOnAdd()
+				)
+			;
+		}
+	}
+
+	public function getUpdateOperation(Item $item, Context $context = null): Operation\Update
+	{
+		$operation = parent::getUpdateOperation($item, $context);
+
+		$operation
+			->addAction(
+				Operation::ACTION_BEFORE_SAVE,
+				new Operation\Action\Compatible\SendEvent\WithCancel\Update(
+					'OnBeforeCrmDealUpdate',
+					'CRM_DEAL_UPDATE_CANCELED',
+				),
+			)
+			->addAction(
+				Operation::ACTION_BEFORE_SAVE,
+				new Operation\Action\Compatible\SendEvent\ProductRowsSave('OnBeforeCrmDealProductRowsSave'),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\ClearCache(
+					null,
+					'crm_entity_name_' . $this->getEntityTypeId() . '_',
+					[Item::FIELD_NAME_TITLE]
+				)
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\FillEntityFieldsContext()
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SocialNetwork\ProcessUpdate(),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SocialNetwork\ProcessSendNotification\WhenUpdatingEntity(),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SendEvent('OnAfterCrmDealUpdate'),
+			)
+			->addAction(
+				Operation::ACTION_AFTER_SAVE,
+				new Operation\Action\Compatible\SendEvent\ProductRowsSave('OnAfterCrmDealProductRowsSave'),
+			)
+		;
+
+		if ($this->isInventoryManagementEnabled())
+		{
+			$synchronizeReserveOperation = new Reservation\Actions\SynchronizeReservesOnUpdate();
+
+			$operation
+				->addAction(
+					Operation::ACTION_BEFORE_SAVE,
+					new Reservation\Actions\PrepareReservationFieldsOnUpdate()
+				)
+				->addAction(
+					Operation::ACTION_BEFORE_SAVE,
+					$synchronizeReserveOperation
+				)
+				->addAction(
+					Operation::ACTION_AFTER_SAVE,
+					$synchronizeReserveOperation
+				)
+				->addAction(
+					Operation::ACTION_BEFORE_SAVE,
+					new Reservation\Actions\CheckProductsOnUpdate()
+				)
+				->addAction(
+					Operation::ACTION_AFTER_SAVE,
+					new Reservation\Actions\ProcessInventoryManagementOnUpdate()
+				)
+			;
+		}
+
+		$operation->addAction(
+			Operation::ACTION_AFTER_SAVE,
+			new Operation\Action\CreateFinalSummaryTimelineHistoryItem()

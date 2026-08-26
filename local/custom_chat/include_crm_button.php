@@ -26,6 +26,11 @@ try {
 	}
 }
 
+$waCcPortal = __DIR__ . '/include_portal_widget.php';
+if (is_file($waCcPortal)) {
+	require_once $waCcPortal;
+}
+
 /** SidePanel на десктопе; на mobile WebView — PageManager / location. */
 function waCcBuildOpenJs($url)
 {

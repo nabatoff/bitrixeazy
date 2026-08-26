@@ -1,0 +1,226 @@
+
+==== TPL 294 2.2. Предоплата получена ====
+Array
+(
+    [0] => Array
+        (
+            [Type] => SequentialWorkflowActivity
+            [Name] => Template
+            [Activated] => Y
+            [Node] => 
+            [Properties] => Array
+                (
+                    [Title] => Последовательный бизнес-процесс
+                    [Permission] => Array
+                        (
+                        )
+
+                )
+
+            [Children] => Array
+                (
+                    [0] => Array
+                        (
+                            [Type] => IfElseActivity
+                            [Name] => A96620_84667_70692_98947
+                            [Activated] => Y
+                            [Node] => 
+                            [Properties] => Array
+                                (
+                                    [Title] => Условие
+                                )
+
+                            [Children] => Array
+                                (
+                                    [0] => Array
+                                        (
+                                            [Type] => IfElseBranchActivity
+                                            [Name] => A9873_28797_66649_97443
+                                            [Activated] => Y
+                                            [Node] => 
+                                            [Properties] => Array
+                                                (
+                                                    [Title] => Предоплата получена
+                                                    [EditorComment] => 
+                                                    [mixedcondition] => Array
+                                                        (
+                                                            [0] => Array
+                                                                (
+                                                                    [object] => Document
+                                                                    [field] => UF_CRM_1764332847245
+                                                                    [operator] => =
+                                                                    [value] => Y
+                                                                    [joiner] => 0
+                                                                )
+
+                                                            [1] => Array
+   
+
+==== TPL 307 2.1. Счет выставлен ====
+Array
+(
+    [0] => Array
+        (
+            [Type] => SequentialWorkflowActivity
+            [Name] => Template
+            [Activated] => Y
+            [Node] => 
+            [Properties] => Array
+                (
+                    [Title] => Последовательный бизнес-процесс
+                    [Permission] => Array
+                        (
+                        )
+
+                )
+
+            [Children] => Array
+                (
+                    [0] => Array
+                        (
+                            [Type] => IfElseActivity
+                            [Name] => A96620_84667_70692_98947
+                            [Activated] => Y
+                            [Node] => 
+                            [Properties] => Array
+                                (
+                                    [Title] => Условие
+                                )
+
+                            [Children] => Array
+                                (
+                                    [0] => Array
+                                        (
+                                            [Type] => IfElseBranchActivity
+                                            [Name] => A9873_28797_66649_97443
+                                            [Activated] => Y
+                                            [Node] => 
+                                            [Properties] => Array
+                                                (
+                                                    [Title] => Счет выставлен
+                                                    [EditorComment] => 
+                                                    [mixedcondition] => Array
+                                                        (
+                                                            [0] => Array
+                                                                (
+                                                                    [object] => Document
+                                                                    [field] => UF_CRM_1784636341021
+                                                                    [operator] => =
+                                                                    [value] => c46cd466bbc8537f835e58cf5696fe6b
+                                                                    [joiner] => 0
+                                                                )
+
+                                                       
+
+==== TPL 361 Шаблон автоматизации (C17:PREPAYMENT_INVOIC) ====
+Array
+(
+    [0] => Array
+        (
+            [Type] => SequentialWorkflowActivity
+            [Name] => Template
+            [Properties] => Array
+                (
+                    [Title] => Bizproc Automation template
+                )
+
+            [Children] => Array
+                (
+                    [0] => Array
+                        (
+                            [Type] => ParallelActivity
+                            [Name] => A33568_66047_17839_83803
+                            [Properties] => Array
+                                (
+                                    [Title] => Параллельное выполнение
+                                )
+
+                            [Children] => Array
+                                (
+                                    [0] => Array
+                                        (
+                                            [Type] => SequenceActivity
+                                            [Name] => A41716_73202_32710_77125
+                                            [Properties] => Array
+                                                (
+                                                    [Title] => Automation sequence
+                                                )
+
+                                            [Children] => Array
+                                                (
+                                                    [0] => Array
+                                                        (
+                                                            [Type] => SetFieldActivity
+                                                            [Activated] => Y
+                                                            [Properties] => Array
+                                                                (
+                                                                    [FieldValue] => Array
+                                                                        (
+                                                                            [TITLE] => {=Document:UF_CRM_1782797821314} {=Document:UF_CRM_1782798174634} - {=Document:COMPANY_ID > printable}\{=Document:CONTACT.NAME}
+                                                                        )
+
+                                                                    [ModifiedBy] => Array
+                                                                        (
+                                                                        )
+
+ 
+
+==== USER 69 ====
+name=Динара Айтенова admin= active=Y
+groups=3,4,12,14,2
+dept=[251]
+
+==== DSG FILES ====
+include_deal_auto_take.php
+include_deal_uf_history.php
+include_deal_uf_lock.php
+include_kanban_deal_paint.php
+kanban_deal_paint_ajax.php
+
+INIT_HAS_DSG=Y autotake=Y hist=Y
+
+==== GREP PREPAY SET ON SERVER ====
+/home/bitrix/www/local/crm/kanban_deal_paint_ajax.php
+/home/bitrix/www/local/crm/include_deal_auto_take.php
+/home/bitrix/www/local/crm/include_deal_uf_history.php
+
+==== TRACKING TYPE1 TITLES ====
+4 Template | Bizproc Automation template
+1 A26164_43301_50624_66190 | Automation sequence
+1 A78802_73841_48753_69324 | Automation sequence
+1 A22104_94109_96370_40855 | Изменить элемент  (Копия)  (Копия)
+1 A33568_66047_17839_83803 | Параллельное выполнение
+1 A18933_50340_10916_11842 | Automation sequence
+1 A18937_96341_89117_35316 | Automation sequence
+1 A77534_36425_11111_57055 | Изменить элемент  (Копия)  (Копия)
+1 A54004_85063_21255_46158 | Параллельное выполнение
+1 A65330_30386_93460_70143 | Automation sequence
+1 A95495_76704_16752_47984 | Automation sequence
+1 A92707_49466_12538_39124 | Изменить элемент
+1 A32771_23937_16994_17672 | Параллельное выполнение
+1 A41716_73202_32710_77125 | Automation sequence
+1 A75538_11219_34777_81829 | Automation sequence
+1 A40428_81269_85811_90575 | Изменить элемент  (Копия)
+1 A71212_64212_12346_57930 | Параллельное выполнение
+1 A93648_22677_10873_43761 | Добавить комментарий в элемент
+
+==== WORKFLOW 294 TRACKING ====
+
+==== WORKFLOW 361 TRACKING ====
+{"ID":"26070919","TYPE":"1","ACTION_NAME":"Template","ACTION_TITLE":"Bizproc Automation template","N":null}
+{"ID":"26070920","TYPE":"1","ACTION_NAME":"A33568_66047_17839_83803","ACTION_TITLE":"Параллельное выполнение","N":null}
+{"ID":"26070921","TYPE":"1","ACTION_NAME":"A41716_73202_32710_77125","ACTION_TITLE":"Automation sequence","N":null}
+{"ID":"26070922","TYPE":"1","ACTION_NAME":"A18937_96341_89117_35316","ACTION_TITLE":"Automation sequence","N":null}
+{"ID":"26070923","TYPE":"2","ACTION_NAME":"A18937_96341_89117_35316","ACTION_TITLE":"Automation sequence","N":null}
+{"ID":"26070924","TYPE":"1","ACTION_NAME":"A40428_81269_85811_90575","ACTION_TITLE":"Изменить элемент  (Копия)","N":null}
+{"ID":"26070925","TYPE":"2","ACTION_NAME":"A40428_81269_85811_90575","ACTION_TITLE":"Изменить элемент  (Копия)","N":null}
+{"ID":"26070926","TYPE":"2","ACTION_NAME":"A41716_73202_32710_77125","ACTION_TITLE":"Automation sequence","N":null}
+{"ID":"26070927","TYPE":"2","ACTION_NAME":"A33568_66047_17839_83803","ACTION_TITLE":"Параллельное выполнение","N":null}
+{"ID":"26070928","TYPE":"2","ACTION_NAME":"Template","ACTION_TITLE":"Bizproc Automation template","N":null}
+n=10
+
+==== UTS ROW ====
+{"VALUE_ID":"215868","UF_CRM_1764332847245":"1","UF_CRM_1785326361467":null,"UF_CRM_1785324070":null,"UF_CRM_1784636341021":null,"UF_CRM_1786008089":null,"UF_CRM_1783486791226":"910","UF_CRM_1783485774093":"908","UF_CRM_1785325552":"98562"}
+
+==== DEAL CORE ====
+При выполнении скрипта возникла ошибка. Включить расширенный вывод ошибок можно в файле настроек <a href='https://dev.1c-bitrix.ru/learning/course/index.php?COURSE_ID=43&LESSON_ID=2795'>.settings.php</a>

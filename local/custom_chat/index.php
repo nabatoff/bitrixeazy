@@ -162,6 +162,116 @@ function waCcOggDurationSec($absPath)
 	return round($sec, 2);
 }
 
+function waCcResolveChatFile($fileId, $chatId = 0)
+{
+	$fileId = (int)$fileId;
+	$chatId = (int)$chatId;
+	if ($fileId <= 0) {
+		return null;
+	}
+
+	$fileArray = null;
+	$diskFileObj = null;
+
+	if (\Bitrix\Main\Loader::includeModule('disk')) {
+		try {
+			$diskFile = \Bitrix\Disk\File::loadById($fileId);
+			if ($diskFile) {
+				$diskFileObj = $diskFile;
+				$fileArray = $diskFile->getFile();
+			}
+		} catch (\Throwable $e) {
+			$fileArray = null;
+		}
+	}
+
+	if (!$fileArray && \Bitrix\Main\Loader::includeModule('im')) {
+		try {
+			$row = null;
+			if (class_exists('\\Bitrix\\Im\\Model\\FileTable')) {
+				$filter = ['=ID' => $fileId];
+				if ($chatId > 0) {
+					$filter['=CHAT_ID'] = $chatId;
+				}
+				$row = \Bitrix\Im\Model\FileTable::getList([
+					'filter' => $filter,
+					'limit' => 1,
+				])->fetch();
+				if (!$row && $chatId > 0) {
+					$row = \Bitrix\Im\Model\FileTable::getList([
+						'filter' => ['=ID' => $fileId],
+						'limit' => 1,
+					])->fetch();
+				}
+			}
+
+			$diskId = 0;
+			if ($row) {
+				$diskId = (int)($row['DISK_FILE_ID'] ?? $row['DISK_ID'] ?? 0);
+			}
+			if ($diskId <= 0 && class_exists('\\CIMDisk') && method_exists('CIMDisk', 'GetFile')) {
+				$imFile = \CIMDisk::GetFile($fileId);
+				if (is_array($imFile)) {
+					$diskId = (int)($imFile['DISK_FILE_ID'] ?? $imFile['disk_file_id'] ?? 0);
+					if (!$fileArray && !empty($imFile['FILE'])) {
+						$fileArray = $imFile['FILE'];
+					}
+				}
+			}
+			if ($diskId > 0 && \Bitrix\Main\Loader::includeModule('disk')) {
+				$diskFile = \Bitrix\Disk\File::loadById($diskId);
+				if ($diskFile) {
+					$diskFileObj = $diskFile;
+					$fileArray = $diskFile->getFile();
+				}
+			}
+		} catch (\Throwable $e) {
+			/* continue */
+		}
+	}
+
+	if (!$fileArray) {
+		try {
+			$candidate = \CFile::GetFileArray($fileId);
+			if (is_array($candidate) && !empty($candidate['SRC'])) {
+				$fileArray = $candidate;
+			}
+		} catch (\Throwable $e) {
+			$fileArray = null;
+		}
+	}
+
+	if (!is_array($fileArray) || empty($fileArray['ID'])) {
+		return null;
+	}
+
+	$filePath = \CFile::GetPath($fileArray['ID']);
+	$absPath = $filePath ? ($_SERVER['DOCUMENT_ROOT'] . $filePath) : '';
+	if ((!$absPath || !is_file($absPath)) && !empty($fileArray['SRC'])) {
+		$absPath = $_SERVER['DOCUMENT_ROOT'] . $fileArray['SRC'];
+	}
+
+	$fileName = $fileArray['ORIGINAL_NAME'] ?? $fileArray['FILE_NAME'] ?? 'file';
+	if ($diskFileObj) {
+		try {
+			$diskName = (string)$diskFileObj->getName();
+			if ($diskName !== '') {
+				$fileName = $diskName;
+			}
+		} catch (\Throwable $e) {
+			/* keep b_file name */
+		}
+	}
+
+	return [
+		'file' => $fileArray,
+		'diskFile' => $diskFileObj,
+		'absPath' => $absPath,
+		'name' => $fileName,
+		'mime' => $fileArray['CONTENT_TYPE'] ?? 'application/octet-stream',
+	];
+}
+
 function waCcStreamMediaFile($absPath, $mime, $fileName, $kind, $duration = 0)
 {
 	$size = filesize($absPath);
@@ -338,6 +448,132 @@ if (isset($_GET['wa_ticks'])) {
 	exit;
 }
 
+if (isset($_GET['wa_bulk_zip'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	define('BX_SECURITY_SHOW_MESSAGE', false);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+
+	global $USER;
+	if ((!$USER || !$USER->IsAuthorized()) && empty($GLOBALS['WA_CC_MEDIA_AUTHED']) && empty($GLOBALS['WA_CC_MEDIA_AUTHED'])) {
+		http_response_code(401);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'Auth required';
+		exit;
+	}
+
+	if (!class_exists('ZipArchive')) {
+		http_response_code(500);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'ZipArchive not available';
+		exit;
+	}
+
+	$chatId = (int)($_GET['chat'] ?? 0);
+	$rawIds = (string)($_GET['ids'] ?? '');
+	$fileIds = preg_split('/[^\d]+/', $rawIds);
+	$fileIds = array_values(array_unique(array_filter(array_map('intval', $fileIds))));
+	if (!$fileIds) {
+		http_response_code(400);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'No files';
+		exit;
+	}
+
+	$tmpZip = tempnam(sys_get_temp_dir(), 'wa_cc_zip_');
+	if (!$tmpZip) {
+		http_response_code(500);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'Temp file error';
+		exit;
+	}
+	@unlink($tmpZip);
+	$tmpZip .= '.zip';
+
+	$zip = new \ZipArchive();
+	if ($zip->open($tmpZip, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+		http_response_code(500);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'Zip open failed';
+		exit;
+	}
+
+	$usedNames = [];
+	foreach ($fileIds as $fileId) {
+		$resolved = waCcResolveChatFile($fileId, $chatId);
+		if (!$resolved || empty($resolved['absPath']) || !is_file($resolved['absPath'])) {
+			continue;
+		}
+		$baseName = trim((string)$resolved['name']);
+		if ($baseName === '') {
+			$baseName = 'file_' . $fileId;
+		}
+		$name = $baseName;
+		$dot = strrpos($baseName, '.');
+		$stem = $dot !== false ? substr($baseName, 0, $dot) : $baseName;
+		$ext = $dot !== false ? substr($baseName, $dot) : '';
+		$i = 2;
+		while (isset($usedNames[mb_strtolower($name)])) {
+			$name = $stem . ' (' . $i . ')' . $ext;
+			$i++;
+		}
+		$usedNames[mb_strtolower($name)] = true;
+		$zip->addFile($resolved['absPath'], $name);
+	}
+	$zip->close();
+
+	if (!is_file($tmpZip) || filesize($tmpZip) <= 0) {
+		@unlink($tmpZip);
+		http_response_code(404);
+		header('Content-Type: text/plain; charset=utf-8');
+		echo 'Files not found';
+		exit;
+	}
+
+	$downloadName = 'wa_files_' . date('Ymd_His') . '.zip';
+	header('Content-Type: application/zip');
+	header('Content-Disposition: attachment; filename="' . rawurlencode($downloadName) . '"');
+	header('Content-Length: ' . filesize($tmpZip));
+	header('Cache-Control: no-store');
+	readfile($tmpZip);
+	@unlink($tmpZip);
+	exit;
+}
+
+/**
+ * Нативная WA-цитата: POST ?wa_quote_send=1 → Green API sendMessage/sendFileByUpload.
+ * Без im.message.add (иначе дубль через коннектор).
+ */
+if (isset($_GET['wa_quote_send'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	define('BX_SECURITY_SHOW_MESSAGE', false);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+	require_once __DIR__ . '/include_wa_quote_send.php';
+	waCcQuoteSendHandle();
+	exit;
+}
+
+if (isset($_GET['wa_msg_meta'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	define('BX_SECURITY_SHOW_MESSAGE', false);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+	require_once __DIR__ . '/include_wa_quote_send.php';
+	waCcQuoteSendMetaHandle();
+	exit;
+}
+
+if (isset($_GET['wa_quote_link'])) {
+	define('NO_KEEP_STATISTIC', true);
+	define('NOT_CHECK_PERMISSIONS', true);
+	define('BX_SECURITY_SHOW_MESSAGE', false);
+	require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+	require_once __DIR__ . '/include_wa_quote_send.php';
+	waCcQuoteLinkHandle();
+	exit;
+}
+
 /**
  * Прокси медиафайлов чата через сессию портала.
  * REST im.v2.File.download / disk.file.get часто 400/401 — обходим.
@@ -384,103 +620,20 @@ if (!empty($_GET['wa_media'])) {
 		echo 'Bad file id';
 		exit;
 	}
-
-	$fileArray = null;
-	$diskFileObj = null;
-
-	if (\Bitrix\Main\Loader::includeModule('disk')) {
-		try {
-			$diskFile = \Bitrix\Disk\File::loadById($fileId);
-			if ($diskFile) {
-				$diskFileObj = $diskFile;
-				$fileArray = $diskFile->getFile();
-			}
-		} catch (\Throwable $e) {
-			$fileArray = null;
-		}
-	}
-
-	// FILE_ID из чата часто = ID строки b_im_file, не Disk
-	if (!$fileArray && \Bitrix\Main\Loader::includeModule('im')) {
-		try {
-			$row = null;
-			if (class_exists('\\Bitrix\\Im\\Model\\FileTable')) {
-				$filter = ['=ID' => $fileId];
-				if ($chatId > 0) {
-					$filter['=CHAT_ID'] = $chatId;
-				}
-				$row = \Bitrix\Im\Model\FileTable::getList([
-					'filter' => $filter,
-					'limit' => 1,
-				])->fetch();
-				if (!$row && $chatId > 0) {
-					$row = \Bitrix\Im\Model\FileTable::getList([
-						'filter' => ['=ID' => $fileId],
-						'limit' => 1,
-					])->fetch();
-				}
-			}
-			$diskId = 0;
-			if ($row) {
-				$diskId = (int)($row['DISK_FILE_ID'] ?? $row['DISK_ID'] ?? 0);
-			}
-			if ($diskId <= 0 && class_exists('\\CIMDisk') && method_exists('CIMDisk', 'GetFile')) {
-				$imFile = \CIMDisk::GetFile($fileId);
-				if (is_array($imFile)) {
-					$diskId = (int)($imFile['DISK_FILE_ID'] ?? $imFile['disk_file_id'] ?? 0);
-					if (!$fileArray && !empty($imFile['FILE'])) {
-						$fileArray = $imFile['FILE'];
-					}
-				}
-			}
-			if ($diskId > 0 && \Bitrix\Main\Loader::includeModule('disk')) {
-				$diskFile = \Bitrix\Disk\File::loadById($diskId);
-				if ($diskFile) {
-					$diskFileObj = $diskFile;
-					$fileArray = $diskFile->getFile();
-				}
-			}
-		} catch (\Throwable $e) {
-			/* continue */
-		}
-	}
-
-	if (!$fileArray) {
-		try {
-			$candidate = \CFile::GetFileArray($fileId);
-			if (is_array($candidate) && !empty($candidate['SRC'])) {
-				$fileArray = $candidate;
-			}
-		} catch (\Throwable $e) {
-			$fileArray = null;
-		}
-	}
-
-	if (!is_array($fileArray) || empty($fileArray['ID'])) {
+	$resolved = waCcResolveChatFile($fileId, $chatId);
+	if (!$resolved || !is_array($resolved['file'] ?? null) || empty($resolved['file']['ID'])) {
 		http_response_code(404);
 		header('Content-Type: text/plain; charset=utf-8');
 		echo 'File not found';
 		exit;
 	}
+	$fileArray = $resolved['file'];
+	$diskFileObj = $resolved['diskFile'];
 
 	// Прямой стрим надёжнее ViewByUser для <img>/<audio> (нет лишних редиректов)
-	$filePath = \CFile::GetPath($fileArray['ID']);
-	$absPath = $filePath ? ($_SERVER['DOCUMENT_ROOT'] . $filePath) : '';
-	if ((!$absPath || !is_file($absPath)) && !empty($fileArray['SRC'])) {
-		$absPath = $_SERVER['DOCUMENT_ROOT'] . $fileArray['SRC'];
-	}
-	$fileName = $fileArray['ORIGINAL_NAME'] ?? $fileArray['FILE_NAME'] ?? 'file';
-	if ($diskFileObj) {
-		try {
-			$diskName = (string)$diskFileObj->getName();
-			if ($diskName !== '') {
-				$fileName = $diskName;
-			}
-		} catch (\Throwable $e) {
-			/* keep b_file name */
-		}
-	}
-	$declaredMime = $fileArray['CONTENT_TYPE'] ?? 'application/octet-stream';
+	$absPath = $resolved['absPath'];
+	$fileName = $resolved['name'];
+	$declaredMime = $resolved['mime'];
 	$sniff = waCcSniffMediaKind($absPath, $declaredMime, $fileName);
 	$sniff['name'] = $fileName;
 	$sniff['ext'] = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
@@ -498,6 +651,7 @@ if (!empty($_GET['wa_media'])) {
 	}
 
 	if ($absPath && is_file($absPath)) {
+		$forceDownload = !empty($_GET['download']) || !empty($_GET['dl']);
 		if (
 			$sniff['kind'] === 'audio'
 			&& waCcWantMobileAudioMp3()
@@ -506,8 +660,24 @@ if (!empty($_GET['wa_media'])) {
 			$mp3 = waCcTranscodeAudioToMp3($absPath, $fileId);
 			if ($mp3) {
 				$mp3Name = preg_replace('/\.[^.]+$/', '', $fileName) . '.mp3';
+				if ($forceDownload) {
+					header('Content-Type: audio/mpeg');
+					header('Content-Disposition: attachment; filename="' . rawurlencode($mp3Name) . '"');
+					header('Content-Length: ' . filesize($mp3));
+					header('Cache-Control: private, max-age=3600');
+					readfile($mp3);
+					exit;
+				}
 				waCcStreamMediaFile($mp3, 'audio/mpeg', $mp3Name, 'audio', $duration);
 			}
+		}
+		if ($forceDownload) {
+			header('Content-Type: ' . $sniff['mime']);
+			header('Content-Disposition: attachment; filename="' . rawurlencode($fileName) . '"');
+			header('Content-Length: ' . filesize($absPath));
+			header('Cache-Control: private, max-age=3600');
+			readfile($absPath);
+			exit;
 		}
 		waCcStreamMediaFile($absPath, $sniff['mime'], $fileName, $sniff['kind'], $duration);
 	}
@@ -1031,7 +1201,7 @@ if ($waEmbed) {
 	<?php if ($waLiteHead): ?>
 		<script>window.BX=window.BX||{};BX.message=BX.message||function(){};</script>
 		<script src="/bitrix/js/main/core/core.min.js?v=wa1"></script>
-		<script src="/bitrix/js/main/ajax/ajax.min.js?v=wa1"></script>
+		<script src="/bitrix/js/main/core/core_ajax.min.js?v=wa1"></script>
 		<script src="/bitrix/js/rest/client/rest.client.min.js?v=wa1"></script>
 		<?php if ($waMobile): ?>
 		<script src="/bitrix/js/mobileapp/mobile.js?v=wa1"></script>
@@ -1194,6 +1364,29 @@ if ($waEmbed) {
 	font-family: inherit;
 }
 .wa-search input::placeholder { color: var(--wa-muted); }
+.wa-new-chat {
+	margin: 12px;
+	padding: 18px 14px;
+	text-align: center;
+	background: #f0f9f6;
+	border: 1px solid #cce8df;
+	border-radius: 10px;
+	color: var(--wa-text);
+}
+.wa-new-chat-title { font-weight: 600; margin-bottom: 5px; }
+.wa-new-chat-phone { color: var(--wa-muted); font-size: 13px; margin-bottom: 12px; }
+.wa-new-chat-btn {
+	border: 0;
+	border-radius: 7px;
+	padding: 9px 14px;
+	background: var(--wa-teal);
+	color: #fff;
+	font-family: inherit;
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.wa-new-chat-btn:disabled { opacity: .55; cursor: wait; }
 
 .wa-tabs {
 	display: flex;
@@ -1360,6 +1553,8 @@ if ($waEmbed) {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
 	background: var(--wa-chat-bg);
 }
 .wa-main-header {
@@ -1394,6 +1589,74 @@ if ($waEmbed) {
 	flex-shrink: 0;
 }
 .wa-header-actions.visible { display: flex; }
+.wa-chat-search-toggle {
+	display: none;
+	width: 38px;
+	height: 38px;
+	flex: 0 0 38px;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: #54656f;
+	cursor: pointer;
+}
+body.wa-chat-open .wa-chat-search-toggle { display: inline-flex; }
+.wa-chat-search-toggle:hover,
+.wa-chat-search-toggle.active { background: #e9edef; color: var(--wa-teal-dark); }
+.wa-chat-search-toggle svg { width: 21px; height: 21px; }
+.wa-chat-search-panel {
+	display: none;
+	align-items: center;
+	gap: 8px;
+	padding: 7px 12px;
+	background: #fff;
+	border-bottom: 1px solid var(--wa-border);
+	flex-shrink: 0;
+}
+.wa-chat-search-panel.visible { display: flex; }
+.wa-chat-search-field {
+	flex: 1;
+	min-width: 0;
+	height: 36px;
+	padding: 0 12px;
+	border: 1px solid #d7dcdf;
+	border-radius: 8px;
+	outline: none;
+	font-family: inherit;
+	font-size: 14px;
+	color: var(--wa-text);
+	background: #f7f8fa;
+}
+.wa-chat-search-field:focus { border-color: var(--wa-teal); background: #fff; }
+.wa-chat-search-status {
+	min-width: 88px;
+	color: var(--wa-muted);
+	font-size: 12px;
+	text-align: right;
+	white-space: nowrap;
+}
+.wa-chat-search-nav,
+.wa-chat-search-close {
+	width: 34px;
+	height: 34px;
+	flex: 0 0 34px;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: #54656f;
+	font-size: 20px;
+	line-height: 1;
+	cursor: pointer;
+}
+.wa-chat-search-nav:hover,
+.wa-chat-search-close:hover { background: #e9edef; }
+.wa-chat-search-nav:disabled { opacity: .35; cursor: default; background: transparent; }
+.wa-msg.wa-chat-search-hit {
+	outline: 3px solid rgba(0, 168, 132, .48);
+	box-shadow: 0 0 0 6px rgba(0, 168, 132, .12);
+}
 .wa-ol-btn {
 	border: none;
 	border-radius: 8px;
@@ -1443,7 +1706,8 @@ body.wa-cc-mobile .wa-msg-actions > * {
 }
 .wa-msg.system .wa-msg-actions { display: none; }
 .wa-msg-reply-btn,
-.wa-msg-fwd-btn {
+.wa-msg-fwd-btn,
+.wa-msg-select-btn {
 	border: none;
 	background: rgba(255,255,255,.92);
 	color: #54656f;
@@ -1457,6 +1721,29 @@ body.wa-cc-mobile .wa-msg-actions > * {
 	padding: 0;
 }
 .wa-msg-fwd-btn { font-size: 15px; }
+.wa-msg-select-btn { font-size: 16px; }
+.wa-msg.selected {
+	outline: 2px solid rgba(0, 168, 132, .45);
+	box-shadow: 0 0 0 3px rgba(0, 168, 132, .12);
+}
+.wa-msg.selected::after {
+	content: '✓';
+	position: absolute;
+	left: -10px;
+	top: 50%;
+	transform: translateY(-50%);
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: var(--wa-teal);
+	color: #fff;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	font-weight: 700;
+	box-shadow: 0 2px 6px rgba(11,20,26,.16);
+}
 .wa-msg .wa-msg-from { display: block; font-size: 12.5px; font-weight: 600; color: #06cf9c; margin-bottom: 3px; padding-right: 62px; }
 .wa-msg.out .wa-msg-from { color: #1a7f4c; }
 body.wa-cc-mobile .wa-msg.out .wa-msg-actions {
@@ -1467,15 +1754,38 @@ body.wa-cc-mobile .wa-msg.out .wa-msg-actions {
 body.wa-cc-mobile .wa-msg.has-audio {
 	margin-top: 4px;
 }
+body.wa-cc-mobile .wa-chat-search-panel { padding: 7px 8px; }
+body.wa-cc-mobile .wa-chat-search-status { min-width: 58px; }
 
 .wa-messages-container {
 	flex: 1;
+	min-height: 0;
 	overflow-y: auto;
+	overflow-anchor: none;
 	padding: 20px 8%;
 	display: flex;
 	flex-direction: column;
 	background-color: #e5ddd5;
 	background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23d4cdc4' fill-opacity='0.35'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/svg%3E");
+}
+.wa-msg-unread-sep {
+	align-self: stretch;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 12px 0 8px;
+	color: #00a884;
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: .02em;
+}
+.wa-msg-unread-sep::before,
+.wa-msg-unread-sep::after {
+	content: '';
+	flex: 1;
+	height: 1px;
+	background: #00a884;
+	opacity: .4;
 }
 .wa-msg {
 	max-width: 65%;
@@ -1574,7 +1884,9 @@ body.wa-cc-mobile .wa-msg audio.wa-voice {
 .wa-msg .wa-media .wa-media-loading { font-size: 13px; color: var(--wa-muted); padding: 6px 0; }
 .wa-msg .wa-file-link { display: inline-flex; align-items: center; gap: 6px; color: #027eb5; text-decoration: none; word-break: break-all; }
 .wa-msg-quote {
-	display: block;
+	display: flex;
+	align-items: center;
+	gap: 8px;
 	border-left: 3px solid #06cf9c;
 	background: rgba(0,0,0,.04);
 	border-radius: 6px;
@@ -1584,9 +1896,20 @@ body.wa-cc-mobile .wa-msg audio.wa-voice {
 	line-height: 1.35;
 	color: var(--wa-muted);
 }
+.wa-msg-quote-body { min-width: 0; flex: 1; }
+.wa-msg-quote-thumb {
+	width: 46px;
+	height: 46px;
+	flex: 0 0 46px;
+	border-radius: 5px;
+	object-fit: cover;
+	background: #dfe5e7;
+	cursor: pointer;
+}
 .wa-msg.out .wa-msg-quote { border-left-color: #1a7f4c; }
 .wa-msg-quote-author { display: block; font-weight: 600; color: #06cf9c; margin-bottom: 2px; }
 .wa-msg.out .wa-msg-quote-author { color: #1a7f4c; }
+.wa-msg-edited { font-size: 10px; color: var(--wa-muted); margin-right: 2px; font-style: italic; }
 .wa-reply-bar {
 	display: none;
 	align-items: center;
@@ -1598,6 +1921,16 @@ body.wa-cc-mobile .wa-msg audio.wa-voice {
 }
 .wa-reply-bar.visible { display: flex; }
 .wa-reply-preview { flex: 1; min-width: 0; }
+.wa-reply-thumb {
+	display: none;
+	width: 42px;
+	height: 42px;
+	flex: 0 0 42px;
+	border-radius: 5px;
+	object-fit: cover;
+	background: #dfe5e7;
+}
+.wa-reply-thumb.visible { display: block; }
 .wa-reply-author { display: block; font-size: 12px; font-weight: 600; color: var(--wa-teal-dark); }
 .wa-reply-text { display: block; font-size: 13px; color: var(--wa-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wa-reply-cancel {
@@ -1630,6 +1963,65 @@ body.wa-cc-mobile .wa-msg audio.wa-voice {
 	color: var(--wa-muted);
 	padding: 6px 16px 0;
 	display: none;
+}
+.wa-attach-preview {
+	display: none;
+	padding: 8px 12px 0;
+	gap: 8px;
+	flex-wrap: wrap;
+	align-items: flex-start;
+}
+.wa-attach-preview.visible { display: flex; }
+.wa-attach-card {
+	position: relative;
+	width: 86px;
+	border: 1px solid var(--wa-border);
+	border-radius: 10px;
+	background: #fff;
+	padding: 6px;
+	box-sizing: border-box;
+}
+.wa-attach-thumb {
+	width: 100%;
+	height: 62px;
+	border-radius: 8px;
+	background: #f3f5f6 center/cover no-repeat;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--wa-muted);
+	font-size: 11px;
+	text-align: center;
+	overflow: hidden;
+}
+.wa-attach-thumb img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+.wa-attach-name {
+	margin-top: 6px;
+	font-size: 11px;
+	line-height: 1.25;
+	color: var(--wa-text);
+	word-break: break-word;
+	max-height: 28px;
+	overflow: hidden;
+}
+.wa-attach-remove {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	width: 22px;
+	height: 22px;
+	border: none;
+	border-radius: 50%;
+	background: #ea0038;
+	color: #fff;
+	font-size: 15px;
+	line-height: 1;
+	cursor: pointer;
 }
 .wa-input-bar {
 	display: none;
@@ -1840,6 +2232,50 @@ body.wa-cc-mobile .wa-msg audio.wa-voice {
 .wa-fwd-item.on .wa-fwd-check { background: var(--wa-teal); border-color: var(--wa-teal); }
 body.wa-cc-mobile .wa-fwd-panel { width: 100%; max-height: 92dvh; }
 
+.wa-bulkbar {
+	display: none;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 14px;
+	background: #f7fffc;
+	border-top: 1px solid #dbeee8;
+	border-bottom: 1px solid #dbeee8;
+}
+.wa-bulkbar.visible { display: flex; }
+.wa-bulkbar-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 14px;
+	font-weight: 600;
+	color: #0b4f43;
+}
+.wa-bulkbar-btn {
+	border: none;
+	border-radius: 10px;
+	height: 36px;
+	padding: 0 12px;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.wa-bulkbar-btn.ghost {
+	background: #fff;
+	color: #54656f;
+	border: 1px solid #d7dbde;
+}
+.wa-bulkbar-btn.primary {
+	background: var(--wa-teal);
+	color: #fff;
+}
+.wa-bulkbar-btn:disabled {
+	opacity: .45;
+	cursor: default;
+}
+body.wa-cc-mobile .wa-bulkbar {
+	flex-wrap: wrap;
+}
+
 @media (max-width: 900px) {
 	.wa-sidebar { min-width: 280px; width: 38%; }
 	.wa-messages-container { padding: 12px 4%; }
@@ -1884,7 +2320,7 @@ body.wa-cc-mobile .wa-main {
 	min-width: 0;
 }
 body.wa-cc-mobile.wa-chat-open .wa-sidebar { display: none; }
-body.wa-cc-mobile.wa-chat-open .wa-main { display: flex; flex-direction: column; }
+body.wa-cc-mobile.wa-chat-open .wa-main { display: flex; flex-direction: column; min-height: 0; }
 body.wa-cc-mobile .wa-back-btn { display: inline-flex; }
 body.wa-cc-mobile .wa-ol-btn,
 body.wa-cc-mobile .wa-icon-btn,
@@ -1958,6 +2394,7 @@ body.wa-cc-desktop .wa-main {
 	display: flex !important;
 	flex: 1;
 	min-width: 0;
+	min-height: 0;
 	flex-direction: column;
 }
 body.wa-cc-desktop .wa-back-btn { display: none !important; }
@@ -1999,14 +2436,31 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				<button type="button" class="wa-ol-btn wa-ol-btn-answer" id="wa-btn-answer" style="display:none;">Принять</button>
 				<button type="button" class="wa-ol-btn wa-ol-btn-finish" id="wa-btn-finish" style="display:none;">Завершить</button>
 			</div>
+			<button type="button" class="wa-chat-search-toggle" id="wa-chat-search-toggle" title="Поиск по сообщениям" aria-label="Поиск по сообщениям">
+				<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+			</button>
+		</div>
+		<div class="wa-chat-search-panel" id="wa-chat-search-panel">
+			<input type="search" class="wa-chat-search-field" id="wa-chat-search-field" placeholder="Поиск в переписке" autocomplete="off">
+			<span class="wa-chat-search-status" id="wa-chat-search-status"></span>
+			<button type="button" class="wa-chat-search-nav" id="wa-chat-search-prev" title="Предыдущее совпадение" aria-label="Предыдущее совпадение" disabled>↑</button>
+			<button type="button" class="wa-chat-search-nav" id="wa-chat-search-next" title="Следующее совпадение" aria-label="Следующее совпадение" disabled>↓</button>
+			<button type="button" class="wa-chat-search-close" id="wa-chat-search-close" title="Закрыть поиск" aria-label="Закрыть поиск">×</button>
 		</div>
 
 		<div class="wa-messages-container" id="wa-messages-container">
 			<div class="wa-empty">Выберите диалог слева</div>
 		</div>
+		<div class="wa-bulkbar" id="wa-bulkbar">
+			<div class="wa-bulkbar-title" id="wa-bulkbar-title">Выбрано: 0</div>
+			<button type="button" class="wa-bulkbar-btn ghost" id="wa-bulkbar-cancel">Снять</button>
+			<button type="button" class="wa-bulkbar-btn ghost" id="wa-bulkbar-download" disabled>Скачать</button>
+			<button type="button" class="wa-bulkbar-btn primary" id="wa-bulkbar-forward" disabled>Переслать</button>
+		</div>
 
 		<div class="wa-footer">
 			<div class="wa-upload-hint" id="wa-upload-hint"></div>
+			<div class="wa-attach-preview" id="wa-attach-preview"></div>
 			<div class="wa-rec-bar" id="wa-rec-bar">
 				<span class="wa-rec-dot"></span>
 				<span class="wa-rec-timer" id="wa-rec-timer">0:00</span>
@@ -2017,6 +2471,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				</button>
 			</div>
 			<div class="wa-reply-bar" id="wa-reply-bar">
+				<img class="wa-reply-thumb" id="wa-reply-thumb" alt="">
 				<div class="wa-reply-preview">
 					<span class="wa-reply-author" id="wa-reply-author"></span>
 					<span class="wa-reply-text" id="wa-reply-text"></span>
@@ -2227,6 +2682,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let firstMessageId = 0;
 	let hasMoreHistory = true;
 	let historyLoading = false;
+	let openingScrollLock = false;
+	let openScrollMode = 'bottom';
+	let openUnreadAnchorId = 0;
 	let sending = false;
 	let filesMap = {};
 	let usersMap = {};
@@ -2236,7 +2694,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let searchDebounceId = null;
 	let searchRemoteLoading = false;
 	let lastRemoteSearchKey = '';
+	let completedPhoneSearchKey = '';
 	let searchRecentLoaded = false;
+	let crmNewChatOffer = null;
+	let waLinesPromise = null;
+	let waAllowedLineIds = null;
 	const failedPhoneLookups = new Set();
 	const failedUserCodeLookups = new Set();
 	const failedCrmEntityChatLookups = new Set();
@@ -2245,8 +2707,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const crmLeadResolveCache = new Map();
 	const groupTitleCache = new Map();
 	const messagesById = {};
+	const replyPreviewCache = {};
+	const localReadAt = {};
 	let replyTo = null;
-	let forwardMsg = null;
+	let forwardMessages = [];
 	let forwardSelected = new Set();
 	let forwardSearchQuery = '';
 	let forwardSearchTimer = null;
@@ -2256,6 +2720,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let waChatTickStatus = '';
 	let waChatTickTs = 0;
 	let waChatReadTs = 0;
+	let selectedMessageIds = new Set();
+	let currentMessageCache = new Map();
+	let chatSearchHistoryComplete = false;
+	let chatSearchResults = [];
+	let chatSearchIndex = -1;
+	let chatSearchToken = 0;
+	let chatSearchTimer = null;
 
 	const listEl = document.getElementById('wa-chat-list');
 	const tabsEl = document.getElementById('wa-tabs');
@@ -2275,7 +2746,15 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const attachBtn = document.getElementById('wa-attach');
 	const fileInput = document.getElementById('wa-file');
 	const uploadHint = document.getElementById('wa-upload-hint');
+	const attachPreviewEl = document.getElementById('wa-attach-preview');
 	const searchEl = document.getElementById('wa-search');
+	const chatSearchToggle = document.getElementById('wa-chat-search-toggle');
+	const chatSearchPanel = document.getElementById('wa-chat-search-panel');
+	const chatSearchField = document.getElementById('wa-chat-search-field');
+	const chatSearchStatus = document.getElementById('wa-chat-search-status');
+	const chatSearchPrev = document.getElementById('wa-chat-search-prev');
+	const chatSearchNext = document.getElementById('wa-chat-search-next');
+	const chatSearchClose = document.getElementById('wa-chat-search-close');
 	const icoMic = sendBtn.querySelector('.ico-mic');
 	const icoSend = sendBtn.querySelector('.ico-send');
 
@@ -2285,6 +2764,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const recSend = document.getElementById('wa-rec-send');
 
 	const replyBar = document.getElementById('wa-reply-bar');
+	const replyThumbEl = document.getElementById('wa-reply-thumb');
 	const replyAuthorEl = document.getElementById('wa-reply-author');
 	const replyTextEl = document.getElementById('wa-reply-text');
 	const replyCancel = document.getElementById('wa-reply-cancel');
@@ -2302,6 +2782,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	const fwdTitleEl = document.getElementById('wa-fwd-title');
 	const fwdGoBtn = document.getElementById('wa-fwd-go');
 	const fwdCloseBtn = document.getElementById('wa-fwd-close');
+	const bulkBarEl = document.getElementById('wa-bulkbar');
+	const bulkBarTitleEl = document.getElementById('wa-bulkbar-title');
+	const bulkBarCancelBtn = document.getElementById('wa-bulkbar-cancel');
+	const bulkBarDownloadBtn = document.getElementById('wa-bulkbar-download');
+	const bulkBarForwardBtn = document.getElementById('wa-bulkbar-forward');
 
 	/* —— voice —— */
 	let mediaRecorder = null;
@@ -2310,6 +2795,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let recStartedAt = 0;
 	let recTimerId = null;
 	let recording = false;
+	let pendingUploadFiles = [];
 
 	function openLightbox(src, downloadUrl) {
 		if (!src) return;
@@ -2545,7 +3031,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		let list = [];
 		let offset = 0;
 		const pageSize = 200;
-		const maxOffset = 1200;
+		const maxOffset = 200;
 		let hasMore = true;
 
 		while (hasMore && offset < maxOffset) {
@@ -2629,8 +3115,51 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return /@g\.us\b/i.test(getOlConnectorHaystack(chat));
 	}
 
+	function getChatOpenLineId(chat) {
+		const entityId = String(
+			(chat && chat.chat && chat.chat.entity_id) ||
+			(chat && chat.entity_id) ||
+			''
+		);
+		const parts = entityId.split('|');
+		return parts.length >= 2 ? (parseInt(parts[1], 10) || 0) : 0;
+	}
+
+	function isChatAllowedForPhoneSearch(chat) {
+		if (!waAllowedLineIds || !waAllowedLineIds.size) return true;
+		const lineId = getChatOpenLineId(chat);
+		return lineId > 0 && waAllowedLineIds.has(lineId);
+	}
+
 	function isChatUnread(chat) {
 		return parseInt(chat.counter || 0, 10) > 0 || !!chat.unread;
+	}
+
+	function applyLocalReadState(chat) {
+		if (!chat) return chat;
+		const id = normalizeDialogId(resolveDialogId(chat));
+		if (!id || !localReadAt[id]) return chat;
+		const msgTs = Math.floor(getChatSortTime(chat) / 1000);
+		if (msgTs <= (localReadAt[id] + 3) || id === normalizeDialogId(currentDialogId)) {
+			chat.counter = 0;
+			chat.unread = false;
+		}
+		return chat;
+	}
+
+	function markCurrentChatReadLocally() {
+		const id = normalizeDialogId(currentDialogId);
+		if (!id) return;
+		localReadAt[id] = Math.floor(Date.now() / 1000);
+		const zero = function (c) {
+			if (!c) return;
+			c.counter = 0;
+			c.unread = false;
+		};
+		zero(currentChatData);
+		chatsCache.forEach(function (c) {
+			if (normalizeDialogId(resolveDialogId(c)) === id) zero(c);
+		});
 	}
 
 	function isPinnedCrmChat(chat) {
@@ -2651,7 +3180,6 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function dedupeChatsByPhone(items) {
-		if (searchQuery.trim()) return items;
 		const byPhone = new Map();
 		const byGroup = new Map();
 		const restItems = [];
@@ -2674,7 +3202,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				return;
 			}
 			const prev = byPhone.get(phone);
-			if (!prev || getChatSortTime(chat) > getChatSortTime(prev)) {
+			const prefer =
+				!prev ||
+				(isChatClosed(prev) && !isChatClosed(chat)) ||
+				(isChatClosed(prev) === isChatClosed(chat) && getChatSortTime(chat) > getChatSortTime(prev));
+			if (prefer) {
 				byPhone.set(phone, chat);
 			}
 		});
@@ -2710,9 +3242,12 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			const labels = { all: 'Чаты', unread: 'Непрочитанные', groups: 'Группы' };
 			btn.innerHTML = labels[key] + (n > 0 ? '<span class="wa-tab-count">' + n + '</span>' : '');
 		});
+		broadcastUnreadToPortal();
 	}
 
 	function emptyListLabel() {
+		const digits = normalizePhoneDigits(searchQuery);
+		if (digits.length >= 10 && completedPhoneSearchKey !== digits) return 'Ищем чаты…';
 		if (searchQuery.trim()) return 'Ничего не найдено';
 		if (listFilter === 'unread') return 'Нет непрочитанных';
 		if (listFilter === 'groups') return 'Нет групповых чатов';
@@ -2742,10 +3277,20 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return false;
 	}
 
-	function handlePullMessage(params) {
+	let loadChatListTimer = null;
+	function scheduleLoadChatList() {
+		if (loadChatListTimer) return;
+		loadChatListTimer = setTimeout(function () {
+			loadChatListTimer = null;
+			if (document.hidden) return;
+			loadChatList();
+		}, 2000);
+	}
+
+	function handlePullMessage(params, command) {
 		params = params || {};
 		if (!pullMatchesCurrentChat(params)) {
-			loadChatList();
+			scheduleLoadChatList();
 			return;
 		}
 		const msg = params.message;
@@ -2753,14 +3298,18 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (params.users) mergeUsers(params.users);
 		if (files) mergeFiles(Array.isArray(files) ? files : Object.values(files));
 		if (msg && msg.id) {
+			if (String(command || '').toLowerCase().indexOf('update') !== -1) {
+				msg._edited = true;
+			}
 			hydrateFilesFromMessages([msg]);
 			prefetchFileUrls(getFileIds(msg));
 			ensureUsersLoaded(collectMessageAuthorIds([msg])).then(function () {
-				appendMessages([msg], false);
+				appendMessages([msg], false, { markEdited: !!msg._edited });
 			});
 		} else refreshTail().catch(() => {});
+		markCurrentChatReadLocally();
 		if (currentDialogId) rest('im.dialog.read', { DIALOG_ID: currentDialogId }).catch(() => {});
-		loadChatList();
+		scheduleLoadChatList();
 	}
 
 	function parseDateValue(raw) {
@@ -3233,16 +3782,46 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		});
 	}
 
+	function firstParamScalar(v) {
+		if (v == null || v === '') return '';
+		if (Array.isArray(v)) return firstParamScalar(v[0]);
+		if (typeof v === 'object') {
+			return firstParamScalar(v.id || v.ID || v.REPLY_ID || v.value || '');
+		}
+		return v;
+	}
+
 	function getReplyId(msg) {
 		const p = msgParams(msg);
-		return parseInt(p.REPLY_ID || p.replyId || p.reply_id || 0, 10) || 0;
+		return parseInt(firstParamScalar(p.REPLY_ID || p.replyId || p.reply_id || msg.replyId || msg.reply_id) || 0, 10) || 0;
+	}
+
+	function cacheReplyPreview(id, author, text, fileIds, mediaKind) {
+		id = parseInt(id, 10) || 0;
+		if (!id) return;
+		const prev = replyPreviewCache[id] || {};
+		replyPreviewCache[id] = {
+			id: id,
+			author: author || prev.author || '',
+			text: text || prev.text || '',
+			fileIds: Array.isArray(fileIds) && fileIds.length ? fileIds.map(parseFileId).filter(Boolean) : (prev.fileIds || []),
+			mediaKind: mediaKind || prev.mediaKind || ''
+		};
 	}
 
 	function getReplyPreviewText(msg) {
 		if (!msg) return '';
 		let t = stripConnectorPrefix(messageRawText(msg));
 		t = t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-		if (!t) t = getFileIds(msg).length ? '[файл]' : '[медиа]';
+		if (!t) {
+			const ids = getFileIds(msg);
+			const first = ids.length ? filesMap[ids[0]] : null;
+			const kind = first ? normalizeMediaKind(first.type, first.extension, first.name) : '';
+			if (kind === 'image') t = 'Фото';
+			else if (kind === 'video') t = 'Видео';
+			else if (kind === 'audio') t = 'Голосовое сообщение';
+			else t = ids.length ? 'Файл' : 'Медиа';
+		}
 		if (t.length > 140) t = t.slice(0, 137) + '...';
 		return t;
 	}
@@ -3256,13 +3835,117 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	function renderReplyQuoteHtml(replyId) {
 		if (!replyId) return '';
 		const orig = messagesById[replyId];
-		if (!orig) {
-			return '<div class="wa-msg-quote"><span class="wa-msg-quote-author">Ответ</span># ' + replyId + '</div>';
+		const cached = replyPreviewCache[replyId] || {};
+		const fileIds = orig ? getFileIds(orig) : (cached.fileIds || []);
+		const firstFileId = fileIds.length ? parseFileId(fileIds[0]) : 0;
+		const file = firstFileId ? (filesMap[firstFileId] || {}) : {};
+		const kind = normalizeMediaKind(file.type || cached.mediaKind, file.extension, file.name);
+		const out = orig ? isOutgoingMessage(orig) : false;
+		const author = BX.util.htmlspecialchars(
+			(orig ? getReplyAuthorName(orig, out) : '') || cached.author || 'Сообщение'
+		);
+		let previewText = (orig ? getReplyPreviewText(orig) : '') || cached.text || '';
+		if (!previewText) previewText = kind === 'image' ? 'Фото' : (firstFileId ? 'Файл' : 'Ответ');
+		const text = BX.util.htmlspecialchars(previewText);
+		let thumb = '';
+		if (firstFileId && kind === 'image') {
+			const src = waMediaProxyUrl(firstFileId);
+			thumb = '<img class="wa-msg-quote-thumb" src="' + BX.util.htmlspecialchars(src) +
+				'" data-full="' + BX.util.htmlspecialchars(src) + '" alt="Фото">';
 		}
-		const out = isOutgoingMessage(orig);
-		const author = BX.util.htmlspecialchars(getReplyAuthorName(orig, out));
-		const text = BX.util.htmlspecialchars(getReplyPreviewText(orig));
-		return '<div class="wa-msg-quote"><span class="wa-msg-quote-author">' + author + '</span>' + text + '</div>';
+		return '<div class="wa-msg-quote" data-reply-id="' + replyId + '">' +
+			'<div class="wa-msg-quote-body"><span class="wa-msg-quote-author">' + author +
+			'</span><span class="wa-msg-quote-text">' + text + '</span></div>' + thumb + '</div>';
+	}
+
+	function extractIncomingQuote(rawText) {
+		const t = String(rawText || '').replace(/^\uFEFF/, '');
+		if (t.indexOf('>>') !== 0) return null;
+		const nl = t.search(/\r?\n/);
+		if (nl < 3) return null;
+		const quote = t.slice(2, nl).trim();
+		const rest = t.slice(nl).replace(/^\r?\n/, '').trim();
+		if (!quote || !rest) return null;
+		return { quote: quote, text: rest };
+	}
+
+	function waMsgMetaUrl(ids) {
+		const entry = window.__WA_NOPROLOG ? 'mobile.php' : 'index.php';
+		const url = new URL(window.location.pathname.replace(/[^/]+$/, '') + entry, window.location.origin);
+		url.searchParams.set('wa_msg_meta', '1');
+		url.searchParams.set('ids', ids.join(','));
+		if (window.__WA_AID && window.__WA_NOPROLOG) {
+			url.searchParams.set('wa_aid', window.__WA_AID);
+		}
+		return url.toString();
+	}
+
+	async function hydrateReplyMeta(messages) {
+		const ids = [];
+		(messages || []).forEach(function (m) {
+			const id = parseInt(m && m.id, 10);
+			if (id) ids.push(id);
+			const rid = getReplyId(m);
+			if (rid && !messagesById[rid] && !replyPreviewCache[rid]) ids.push(rid);
+		});
+		const uniq = Array.from(new Set(ids)).filter(Boolean);
+		if (!uniq.length) return;
+		let items = {};
+		try {
+			const resp = await fetch(waMsgMetaUrl(uniq), { credentials: 'same-origin' });
+			const data = await resp.json();
+			items = (data && data.items) || {};
+		} catch (e) {
+			return;
+		}
+		Object.keys(items).forEach(function (key) {
+			const row = items[key];
+			if (!row) return;
+			const id = parseInt(row.id || key, 10);
+			if (!id) return;
+			cacheReplyPreview(id, '', row.text || '', row.fileIds || [], row.mediaKind || '');
+			if (Array.isArray(row.fileIds) && row.fileIds.length) {
+				prefetchFileUrls(row.fileIds.map(parseFileId).filter(Boolean));
+			}
+			const msg = messagesById[id];
+			if (msg && row.replyId) {
+				msg.params = msg.params || msg.PARAMS || {};
+				if (!getReplyId(msg)) msg.params.REPLY_ID = row.replyId;
+				const quoted = items[String(row.replyId)] || items[row.replyId] || replyPreviewCache[row.replyId];
+				if (quoted) {
+					cacheReplyPreview(
+						row.replyId,
+						'',
+						quoted.text || '',
+						quoted.fileIds || [],
+						quoted.mediaKind || ''
+					);
+				}
+			}
+		});
+	}
+
+	function applyPendingQuote(preview, imMessageId) {
+		if (!preview || !preview.id) return;
+		cacheReplyPreview(
+			preview.id,
+			preview.author || '',
+			preview.text || '',
+			preview.fileIds || [],
+			preview.mediaKind || ''
+		);
+		let target = imMessageId ? messagesById[parseInt(imMessageId, 10)] : null;
+		if (!target) {
+			const lastId = getLastOutgoingMsgId();
+			target = lastId ? messagesById[lastId] : null;
+		}
+		if (!target) return;
+		target.params = target.params || target.PARAMS || {};
+		if (!getReplyId(target)) target.params.REPLY_ID = preview.id;
+		const node = messagesEl.querySelector('.wa-msg[data-id="' + target.id + '"]');
+		if (node && !node.querySelector('.wa-msg-quote')) {
+			node.insertAdjacentHTML('afterbegin', renderReplyQuoteHtml(preview.id));
+		}
 	}
 
 	function updateReplyBar() {
@@ -3271,11 +3954,24 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			replyBar.classList.remove('visible');
 			if (replyAuthorEl) replyAuthorEl.textContent = '';
 			if (replyTextEl) replyTextEl.textContent = '';
+			if (replyThumbEl) {
+				replyThumbEl.classList.remove('visible');
+				replyThumbEl.removeAttribute('src');
+			}
 			return;
 		}
 		replyBar.classList.add('visible');
 		if (replyAuthorEl) replyAuthorEl.textContent = replyTo.author || 'Сообщение';
 		if (replyTextEl) replyTextEl.textContent = replyTo.text || '';
+		if (replyThumbEl) {
+			if (replyTo.thumbnail) {
+				replyThumbEl.src = replyTo.thumbnail;
+				replyThumbEl.classList.add('visible');
+			} else {
+				replyThumbEl.classList.remove('visible');
+				replyThumbEl.removeAttribute('src');
+			}
+		}
 	}
 
 	function setReplyTo(msg) {
@@ -3283,11 +3979,20 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const id = parseInt(msg.id, 10);
 		if (!id) return;
 		const out = isOutgoingMessage(msg);
+		const fileIds = getFileIds(msg);
+		const firstFileId = fileIds.length ? parseFileId(fileIds[0]) : 0;
+		const firstFile = firstFileId ? (filesMap[firstFileId] || {}) : {};
+		const mediaKind = normalizeMediaKind(firstFile.type, firstFile.extension, firstFile.name);
 		replyTo = {
 			id: id,
 			author: getReplyAuthorName(msg, out),
-			text: getReplyPreviewText(msg)
+			text: getReplyPreviewText(msg),
+			connectorMid: extractConnectorMid(msg),
+			fileIds: fileIds,
+			mediaKind: mediaKind,
+			thumbnail: firstFileId && mediaKind === 'image' ? waMediaProxyUrl(firstFileId) : ''
 		};
+		cacheReplyPreview(id, replyTo.author, replyTo.text, fileIds, mediaKind);
 		updateReplyBar();
 		inputEl.focus();
 	}
@@ -3295,6 +4000,82 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	function clearReplyTo() {
 		replyTo = null;
 		updateReplyBar();
+	}
+
+	function extractConnectorMid(msg) {
+		const p = msgParams(msg);
+		let v = p.CONNECTOR_MID || p.connectorMid || p.CONNECTOR_MID || p.connector_mid || '';
+		if (Array.isArray(v)) v = v[0] || '';
+		if (v && typeof v === 'object') v = v.id || v.idMessage || v.CONNECTOR_MID || '';
+		return String(v || '').trim();
+	}
+
+	function quoteSendEndpoint() {
+		const entry = window.__WA_NOPROLOG ? 'mobile.php' : 'index.php';
+		const url = new URL(window.location.pathname.replace(/[^/]+$/, '') + entry, window.location.origin);
+		url.searchParams.set('wa_quote_send', '1');
+		if (window.__WA_AID && window.__WA_NOPROLOG) {
+			url.searchParams.set('wa_aid', window.__WA_AID);
+		}
+		return url.toString();
+	}
+
+	function quoteLinkEndpoint() {
+		const entry = window.__WA_NOPROLOG ? 'mobile.php' : 'index.php';
+		const url = new URL(window.location.pathname.replace(/[^/]+$/, '') + entry, window.location.origin);
+		url.searchParams.set('wa_quote_link', '1');
+		if (window.__WA_AID && window.__WA_NOPROLOG) {
+			url.searchParams.set('wa_aid', window.__WA_AID);
+		}
+		return url.toString();
+	}
+
+	async function linkCommittedFileReply(fileId, replyId) {
+		fileId = parseFileId(fileId);
+		replyId = parseInt(replyId, 10) || 0;
+		if (!fileId || !replyId || !currentChatId) return;
+		const fd = new FormData();
+		fd.append('sessid', BX.bitrix_sessid());
+		fd.append('chatId', String(currentChatId));
+		fd.append('fileId', String(fileId));
+		fd.append('replyId', String(replyId));
+		const resp = await fetch(quoteLinkEndpoint(), {
+			method: 'POST',
+			body: fd,
+			credentials: 'same-origin'
+		});
+		const data = await resp.json().catch(function () { return null; });
+		if (!resp.ok || !data || !data.ok) {
+			throw new Error((data && data.error) || ('http_' + resp.status));
+		}
+	}
+
+	async function sendQuotedViaGreen(opts) {
+		opts = opts || {};
+		if (!replyTo || !replyTo.id) return { fallback: 'im' };
+		const fd = new FormData();
+		fd.append('chatId', String(currentChatId || ''));
+		fd.append('dialogId', String(currentDialogId || ''));
+		fd.append('replyId', String(replyTo.id));
+		if (replyTo.connectorMid) fd.append('quotedHint', replyTo.connectorMid);
+		if (opts.text) fd.append('message', String(opts.text));
+		if (opts.ptt) fd.append('ptt', '1');
+		(opts.files || []).forEach(function (f) {
+			if (f) fd.append('files[]', f, f.name || 'file');
+		});
+		const resp = await fetch(quoteSendEndpoint(), {
+			method: 'POST',
+			body: fd,
+			credentials: 'same-origin'
+		});
+		let data = null;
+		try { data = await resp.json(); } catch (e) { data = null; }
+		if (data && data.ok) return data;
+		if (data && data.fallback === 'im') return data;
+		return {
+			fallback: 'im',
+			error: (data && (data.error || data.message)) || ('http_' + resp.status)
+		};
 	}
 
 	function bindMessageReplyButton(div, msg) {
@@ -3314,6 +4095,18 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			setReplyTo(msg);
 		});
 
+		const selectBtn = document.createElement('button');
+		selectBtn.type = 'button';
+		selectBtn.className = 'wa-msg-select-btn';
+		selectBtn.title = 'Выбрать';
+		selectBtn.setAttribute('aria-label', 'Выбрать');
+		selectBtn.textContent = '✓';
+		selectBtn.addEventListener('click', function (e) {
+			e.preventDefault();
+			e.stopPropagation();
+			toggleMessageSelection(msg);
+		});
+
 		const fwdBtn = document.createElement('button');
 		fwdBtn.type = 'button';
 		fwdBtn.className = 'wa-msg-fwd-btn';
@@ -3327,6 +4120,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		});
 
 		wrap.appendChild(replyBtn);
+		wrap.appendChild(selectBtn);
 		wrap.appendChild(fwdBtn);
 		div.appendChild(wrap);
 	}
@@ -3364,10 +4158,12 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	function updateFwdSendState() {
 		if (!fwdGoBtn) return;
-		fwdGoBtn.disabled = !forwardMsg || forwardSelected.size === 0;
+		fwdGoBtn.disabled = !forwardMessages.length || forwardSelected.size === 0;
 		const n = forwardSelected.size;
+		const msgCount = forwardMessages.length;
 		if (fwdTitleEl) {
-			fwdTitleEl.textContent = n ? ('Переслать · ' + n) : 'Переслать';
+			const base = msgCount > 1 ? ('Переслать ' + msgCount + ' сообщений') : 'Переслать';
+			fwdTitleEl.textContent = n ? (base + ' · ' + n) : base;
 		}
 	}
 
@@ -3405,7 +4201,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function closeForwardPicker() {
-		forwardMsg = null;
+		forwardMessages = [];
 		forwardSelected = new Set();
 		forwardSearchQuery = '';
 		forwardRemoteChats = [];
@@ -3415,17 +4211,30 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		updateFwdSendState();
 	}
 
-	function openForwardPicker(msg) {
-		if (!msg || isSystemMessage(msg)) return;
-		forwardMsg = msg;
+	function openForwardPicker(msgOrMessages) {
+		const list = Array.isArray(msgOrMessages) ? msgOrMessages.slice() : [msgOrMessages];
+		const cleaned = list.filter(function (msg) {
+			return msg && !isSystemMessage(msg) && parseInt(msg.id, 10);
+		}).sort(function (a, b) {
+			return (parseInt(a.id, 10) || 0) - (parseInt(b.id, 10) || 0);
+		});
+		if (!cleaned.length) return;
+		forwardMessages = cleaned;
 		forwardSelected = new Set();
 		forwardSearchQuery = '';
 		forwardRemoteChats = [];
 		setForwardSearchLoading(false);
 		if (fwdSearchEl) fwdSearchEl.value = '';
 		if (fwdPreviewEl) {
-			const preview = getReplyPreviewText(msg);
-			fwdPreviewEl.textContent = preview || '[медиа]';
+			if (cleaned.length === 1) {
+				const preview = getReplyPreviewText(cleaned[0]);
+				fwdPreviewEl.textContent = preview || '[медиа]';
+			} else {
+				const withFiles = cleaned.filter(function (msg) { return getFileIds(msg).length > 0; }).length;
+				fwdPreviewEl.textContent =
+					'Сообщений: ' + cleaned.length +
+					(withFiles ? (' · с файлами: ' + withFiles) : '');
+			}
 		}
 		renderForwardList();
 		updateFwdSendState();
@@ -3508,7 +4317,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	async function confirmForward() {
-		if (!forwardMsg || !forwardSelected.size || sending) return;
+		if (!forwardMessages.length || !forwardSelected.size || sending) return;
 		const targets = [];
 		forwardSelected.forEach(function (did) {
 			const chat = (chatsCache || []).find(function (c) { return resolveDialogId(c) === did; });
@@ -3523,13 +4332,16 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			for (let i = 0; i < targets.length; i++) {
 				if (fwdTitleEl) fwdTitleEl.textContent = 'Отправка ' + (i + 1) + '/' + targets.length + '…';
 				try {
-					await sendForwardToChat(targets[i], forwardMsg);
+					for (let j = 0; j < forwardMessages.length; j++) {
+						await sendForwardToChat(targets[i], forwardMessages[j]);
+					}
 				} catch (e) {
 					const name = getAvatarData(targets[i]).title;
 					errors.push(name + ': ' + (e && (e.ex && e.ex.error_description || e.error_description || e.message) || e));
 				}
 			}
 			closeForwardPicker();
+			clearSelectedMessages();
 			loadChatList();
 			if (errors.length) {
 				alert('Переслано с ошибками:\n' + errors.join('\n'));
@@ -3603,6 +4415,113 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			ids.add(parseInt(match[1], 10));
 		}
 		return Array.from(ids);
+	}
+
+	function bulkDownloadUrl(fileId) {
+		return waMediaProxyUrl(fileId) + '&download=1';
+	}
+
+	function bulkZipUrl(fileIds) {
+		const ids = (fileIds || []).map(function (id) { return parseInt(id, 10) || 0; }).filter(Boolean);
+		let url;
+		if (window.__WA_NOPROLOG) {
+			const entry = 'mobile.php';
+			const base = window.location.pathname.replace(/[^/]+$/, '') + entry;
+			url = new URL(base, window.location.origin);
+		} else {
+			url = new URL(window.location.href);
+			url.search = '';
+			url.hash = '';
+		}
+		url.searchParams.set('wa_bulk_zip', '1');
+		url.searchParams.set('chat', String(currentChatId || 0));
+		url.searchParams.set('ids', ids.join(','));
+		if (window.__WA_AID && window.__WA_NOPROLOG) {
+			url.searchParams.set('wa_aid', window.__WA_AID);
+		}
+		return url.toString();
+	}
+
+	function isMessageSelected(msgId) {
+		return selectedMessageIds.has(parseInt(msgId, 10) || 0);
+	}
+
+	function syncSelectedMessageDom(msgId) {
+		const id = parseInt(msgId, 10) || 0;
+		if (!id) return;
+		const node = messagesEl.querySelector('.wa-msg[data-id="' + id + '"]');
+		if (node) node.classList.toggle('selected', selectedMessageIds.has(id));
+	}
+
+	function getSelectedMessages() {
+		return Array.from(selectedMessageIds)
+			.map(function (id) { return messagesById[id] || null; })
+			.filter(Boolean)
+			.sort(function (a, b) { return (parseInt(a.id, 10) || 0) - (parseInt(b.id, 10) || 0); });
+	}
+
+	function collectSelectedFileIds() {
+		const out = new Set();
+		getSelectedMessages().forEach(function (msg) {
+			getFileIds(msg).forEach(function (id) {
+				if (id) out.add(id);
+			});
+		});
+		return Array.from(out);
+	}
+
+	function updateBulkBar() {
+		const count = selectedMessageIds.size;
+		const fileCount = collectSelectedFileIds().length;
+		if (bulkBarEl) bulkBarEl.classList.toggle('visible', count > 0);
+		if (bulkBarTitleEl) {
+			bulkBarTitleEl.textContent = count
+				? ('Выбрано: ' + count + (fileCount ? (' · файлов: ' + fileCount) : ''))
+				: 'Выбрано: 0';
+		}
+		if (bulkBarDownloadBtn) bulkBarDownloadBtn.disabled = count <= 0 || fileCount <= 0;
+		if (bulkBarForwardBtn) bulkBarForwardBtn.disabled = count <= 0;
+	}
+
+	function clearSelectedMessages() {
+		if (!selectedMessageIds.size) return;
+		const ids = Array.from(selectedMessageIds);
+		selectedMessageIds.clear();
+		ids.forEach(syncSelectedMessageDom);
+		updateBulkBar();
+	}
+
+	function toggleMessageSelection(msg) {
+		if (!msg || isSystemMessage(msg)) return;
+		const id = parseInt(msg.id, 10) || 0;
+		if (!id) return;
+		if (selectedMessageIds.has(id)) selectedMessageIds.delete(id);
+		else selectedMessageIds.add(id);
+		syncSelectedMessageDom(id);
+		updateBulkBar();
+	}
+
+	async function downloadSelectedFiles() {
+		const fileIds = collectSelectedFileIds();
+		if (!fileIds.length) {
+			alert('В выбранных сообщениях нет файлов');
+			return;
+		}
+		if (fileIds.length <= 5) {
+			fileIds.forEach(function (fileId, idx) {
+				setTimeout(function () {
+					const a = document.createElement('a');
+					a.href = bulkDownloadUrl(fileId);
+					a.target = '_blank';
+					a.rel = 'noopener';
+					document.body.appendChild(a);
+					a.click();
+					a.remove();
+				}, idx * 180);
+			});
+			return;
+		}
+		window.open(bulkZipUrl(fileIds), '_blank');
 	}
 
 	function collectFileIdsFromMessages(messages) {
@@ -4443,24 +5362,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		await ensureSearchRecentCache();
 
 		const chatIds = new Set();
-		const phoneValues = buildPhoneLookupValues(qDigits);
-
-		try {
-			const dup = await rest('crm.duplicate.findbycomm', { type: 'PHONE', values: phoneValues });
-			const dupData = dup.result || dup || {};
-			const types = ['CONTACT', 'LEAD', 'COMPANY'];
-
-			for (let t = 0; t < types.length; t++) {
-				const ids = dupData[types[t]] || [];
-				for (let i = 0; i < ids.length && i < 12; i++) {
-					await collectChatIdsForCrmEntity(types[t], ids[i], chatIds);
-				}
-			}
-		} catch (e) {
-			console.warn('crm.duplicate.findbycomm', e);
-		}
-
-		await findChatsByPhonesAnyLine([qDigits], chatIds);
+		await findChatsByPhonesAnyLine([qDigits], chatIds, { skipRestrictedCrmMethods: true });
 
 		(chatsCache || []).forEach(function (chat) {
 			if (!matchesChatSearch(chat, query)) return;
@@ -4475,7 +5377,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				const item = await chatItemFromDialogChatId(ids[i]);
 				if (!item) continue;
 				item._phones = getChatPhones(item);
-				if (matchesChatSearch(item, query) || chatItemMatchesPhones(item, [qDigits])) {
+				if (
+					isChatAllowedForPhoneSearch(item) &&
+					(matchesChatSearch(item, query) || chatItemMatchesPhones(item, [qDigits]))
+				) {
 					item._fromSearch = true;
 					found.push(item);
 				}
@@ -4569,8 +5474,15 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		lastRemoteSearchKey = searchKey;
 		searchRemoteLoading = true;
 		listEl.classList.add('wa-list-searching');
+		let searchSucceeded = false;
 
 		try {
+			if (isPhoneSearch) {
+				const lines = await loadWaLines();
+				waAllowedLineIds = new Set(lines.map(function (line) {
+					return parseInt(line.id, 10) || 0;
+				}).filter(Boolean));
+			}
 			const remote = isPhoneSearch
 				? await searchChatsByPhoneRemote(q)
 				: await searchChatsByNameRemote(q);
@@ -4584,10 +5496,18 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				});
 				await enrichChatDisplayNames(remote);
 			}
+			searchSucceeded = true;
 		} catch (e) {
 			console.error(e);
 		} finally {
 			searchRemoteLoading = false;
+			if (
+				searchSucceeded &&
+				isPhoneSearch &&
+				normalizePhoneDigits(searchQuery) === qDigits
+			) {
+				completedPhoneSearchKey = qDigits;
+			}
 			listEl.classList.remove('wa-list-searching');
 			renderChatList();
 		}
@@ -4878,6 +5798,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		} else {
 			container.innerHTML = html;
 		}
+		keepOpenScrollAfterMedia();
 	}
 
 	function renderFilesHtml(msg) {
@@ -5075,13 +5996,20 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		});
 	}
 
+	function waTicksUrl() {
+		if (window.__WA_NOPROLOG) {
+			const entry = 'mobile.php';
+			return new URL(window.location.pathname.replace(/[^/]+$/, '') + entry, window.location.origin);
+		}
+		return new URL('/local/custom_chat/ajax_ticks.php', window.location.origin);
+	}
+
 	async function refreshReadReceipts(opts) {
 		opts = opts || {};
 		const keys = getCurrentChatTickKeys();
 		if (keys.length) {
 			try {
-				const entry = window.__WA_NOPROLOG ? 'mobile.php' : 'index.php';
-				const url = new URL(window.location.pathname.replace(/[^/]+$/, '') + entry, window.location.origin);
+				const url = waTicksUrl();
 				url.searchParams.set('wa_ticks', '1');
 				url.searchParams.set('keys', keys.join(','));
 				const lineId = getCurrentChatLineId();
@@ -5117,7 +6045,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	let ticksBurstTimer = null;
 	let ticksBurstUntil = 0;
 	function startTicksBurst() {
-		ticksBurstUntil = Date.now() + 25000;
+		ticksBurstUntil = Date.now() + 12000;
 		if (ticksBurstTimer) return;
 		ticksBurstTimer = setInterval(function () {
 			if (!currentDialogId || Date.now() > ticksBurstUntil) {
@@ -5126,7 +6054,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				return;
 			}
 			refreshReadReceipts({ force: true }).catch(function () {});
-		}, 1500);
+		}, 4000);
 		refreshReadReceipts({ force: true }).catch(function () {});
 	}
 
@@ -5166,6 +6094,15 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			fromName = out ? getOutgoingSenderName(msg) : getIncomingSenderName(msg);
 		}
 		let rawText = stripConnectorPrefix(messageRawText(msg));
+		if (!replyId) {
+			const extracted = extractIncomingQuote(rawText);
+			if (extracted) {
+				body += '<div class="wa-msg-quote"><div class="wa-msg-quote-body"><span class="wa-msg-quote-author">'
+					+ BX.util.htmlspecialchars(fromName || 'Цитата') + '</span><span class="wa-msg-quote-text">'
+					+ BX.util.htmlspecialchars(extracted.quote) + '</span></div></div>';
+				rawText = extracted.text;
+			}
+		}
 		if (fromName) {
 			const color = out ? '#1a7f4c' : senderColor(fromName);
 			body += '<span class="wa-msg-from" style="color:' + color + '">'
@@ -5175,7 +6112,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (rawText.trim()) body += '<span class="wa-msg-text">' + parseBbCode(rawText) + '</span>';
 		if (!body) body = '<span class="wa-msg-text" style="color:#667781;font-style:italic">[медиа]</span>';
 		if (msgDate) {
-			body += '<span class="wa-msg-time">' + formatTime(msgDate) + messageTicksHtml(msg) + '</span>';
+			body += '<span class="wa-msg-time">' +
+				(msg._edited ? '<span class="wa-msg-edited">изменено</span>' : '') +
+				formatTime(msgDate) + messageTicksHtml(msg) + '</span>';
 		}
 		div.innerHTML = body;
 
@@ -5185,6 +6124,13 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				openLightbox(img.dataset.full || img.src, img.dataset.download || img.dataset.full || img.src);
 			});
 		});
+		div.querySelectorAll('img.wa-msg-quote-thumb').forEach(img => {
+			img.addEventListener('click', e => {
+				e.preventDefault();
+				e.stopPropagation();
+				openLightbox(img.dataset.full || img.src, img.dataset.full || img.src);
+			});
+		});
 		div.querySelectorAll('a[data-file-id]').forEach(a => {
 			a.addEventListener('click', async e => {
 				e.preventDefault();
@@ -5192,11 +6138,17 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				const f = filesMap[fid] || {};
 				const direct = f.urlDownload || f.urlShow || f.urlPreview || '';
 				const url = await resolveMediaUrl(fid, direct);
-				if (url) window.open(url, '_blank');
+				if (url) window.open(bulkDownloadUrl(fid), '_blank');
 				else alert('Не удалось скачать файл');
 			});
 		});
 		bindMessageReplyButton(div, msg);
+		div.classList.toggle('selected', isMessageSelected(msg.id));
+		div.addEventListener('click', function (e) {
+			if (!selectedMessageIds.size) return;
+			if (e.target.closest('a, button, audio, video, img, input, textarea')) return;
+			toggleMessageSelection(msg);
+		});
 		if (div.querySelector('.wa-media-audio') || div.querySelector('audio')) {
 			div.classList.add('has-audio');
 		}
@@ -5212,8 +6164,117 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		});
 	}
 
+	function cacheCurrentMessages(messages) {
+		(messages || []).forEach(function (msg) {
+			const id = parseInt(msg && msg.id, 10) || 0;
+			if (id) currentMessageCache.set(id, msg);
+		});
+	}
+
 	function shouldStickToBottom() {
 		return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 120;
+	}
+
+	function scrollMessagesToBottom() {
+		if (!messagesEl) return;
+		messagesEl.scrollTop = messagesEl.scrollHeight;
+	}
+
+	function findFirstUnreadMessage(messages, unreadCount) {
+		const n = parseInt(unreadCount, 10) || 0;
+		if (n <= 0 || !messages || !messages.length) return null;
+		const sorted = messages.slice().sort(function (a, b) {
+			return (parseInt(a.id, 10) || 0) - (parseInt(b.id, 10) || 0);
+		});
+		const incoming = sorted.filter(function (msg) {
+			return !isSystemMessage(msg) && !isOutgoingMessage(msg);
+		});
+		if (incoming.length) {
+			const idx = Math.max(0, incoming.length - n);
+			return incoming[idx];
+		}
+		const idx = Math.max(0, sorted.length - n);
+		return sorted[idx] || null;
+	}
+
+	function insertUnreadSeparator(anchorId) {
+		if (!anchorId || !messagesEl) return;
+		if (messagesEl.querySelector('.wa-msg-unread-sep')) return;
+		const el = messagesEl.querySelector('.wa-msg[data-id="' + anchorId + '"]');
+		if (!el) return;
+		const sep = document.createElement('div');
+		sep.className = 'wa-msg-unread-sep';
+		sep.textContent = 'Непрочитанные';
+		el.parentNode.insertBefore(sep, el);
+	}
+
+	function applyOpenScroll() {
+		if (!messagesEl) return;
+		if (openScrollMode === 'unread' && openUnreadAnchorId) {
+			const target = messagesEl.querySelector('.wa-msg-unread-sep')
+				|| messagesEl.querySelector('.wa-msg[data-id="' + openUnreadAnchorId + '"]');
+			if (target) {
+				try {
+					target.scrollIntoView({ block: 'start', behavior: 'auto' });
+				} catch (e) {
+					const top = target.offsetTop - 8;
+					messagesEl.scrollTop = top > 0 ? top : 0;
+				}
+				return;
+			}
+		}
+		scrollMessagesToBottom();
+	}
+
+	function scheduleOpenScrollKeep() {
+		openingScrollLock = true;
+		applyOpenScroll();
+		requestAnimationFrame(function () {
+			applyOpenScroll();
+			requestAnimationFrame(applyOpenScroll);
+		});
+		if (messagesEl) {
+			messagesEl.querySelectorAll('img').forEach(function (img) {
+				if (img.complete) return;
+				img.addEventListener('load', applyOpenScroll);
+			});
+		}
+		[80, 250, 600, 1200].forEach(function (ms) {
+			setTimeout(applyOpenScroll, ms);
+		});
+		setTimeout(function () {
+			openingScrollLock = false;
+			applyOpenScroll();
+		}, 1400);
+	}
+
+	function keepOpenScrollAfterMedia() {
+		if (openScrollMode === 'bottom') {
+			if (openingScrollLock || shouldStickToBottom()) scrollMessagesToBottom();
+			return;
+		}
+		if (openingScrollLock) applyOpenScroll();
+	}
+
+	function broadcastUnreadToPortal() {
+		try {
+			const n = getTabCounts().unread || 0;
+			const payload = { source: 'wa-cc', type: 'unread', count: n };
+			window.postMessage(payload, '*');
+			if (window.parent && window.parent !== window) window.parent.postMessage(payload, '*');
+			if (window.top && window.top !== window) window.top.postMessage(payload, '*');
+		} catch (e) { /* ignore */ }
+	}
+
+	function publishOpenChatToPortal() {
+		try {
+			window.__waCcOpenDialogId = currentDialogId || '';
+			window.__waCcOpenChatId = currentChatId || 0;
+			if (window.top) {
+				window.top.__waCcOpenDialogId = currentDialogId || '';
+				window.top.__waCcOpenChatId = currentChatId || 0;
+			}
+		} catch (e) { /* ignore */ }
 	}
 
 	function setHistoryLoader(visible) {
@@ -5230,7 +6291,10 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 	}
 
-	function prependMessages(messages) {
+	async function prependMessages(messages) {
+		cacheCurrentMessages(messages);
+		rememberMessages(messages);
+		await hydrateReplyMeta(messages);
 		if (!messages || !messages.length) return;
 		rememberMessages(messages);
 
@@ -5278,9 +6342,33 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		messagesEl.appendChild(div);
 	}
 
-	function appendMessages(messages, replace) {
-		if (replace) messagesEl.innerHTML = '';
+	function messageContentFingerprint(msg) {
+		if (!msg) return '';
+		return JSON.stringify([
+			stripConnectorPrefix(messageRawText(msg)),
+			getReplyId(msg),
+			getFileIds(msg).map(parseFileId).filter(Boolean),
+			parseInt(msg.author_id || msg.authorId || 0, 10) || 0
+		]);
+	}
+
+	async function appendMessages(messages, replace, opts) {
+		opts = opts || {};
+		const previousById = {};
+		(messages || []).forEach(function (msg) {
+			const id = parseInt(msg && msg.id, 10) || 0;
+			if (id && messagesById[id]) previousById[id] = messagesById[id];
+		});
+		if (replace) {
+			messagesEl.innerHTML = '';
+			selectedMessageIds.clear();
+			updateBulkBar();
+			openUnreadAnchorId = 0;
+			openScrollMode = 'bottom';
+		}
+		cacheCurrentMessages(messages);
 		rememberMessages(messages);
+		await hydrateReplyMeta(messages);
 		if (!messages || !messages.length) {
 			if (replace) {
 				firstMessageId = 0;
@@ -5292,7 +6380,17 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const empty = messagesEl.querySelector('.wa-empty');
 		if (empty) empty.remove();
 
-		const stickBottom = replace || shouldStickToBottom();
+		const unreadCount = parseInt(opts.unreadCount, 10) || 0;
+		const firstUnread = replace ? findFirstUnreadMessage(messages, unreadCount) : null;
+		if (firstUnread && firstUnread.id) {
+			openScrollMode = 'unread';
+			openUnreadAnchorId = parseInt(firstUnread.id, 10) || 0;
+		} else if (replace) {
+			openScrollMode = 'bottom';
+			openUnreadAnchorId = 0;
+		}
+
+		const stickBottom = replace ? (openScrollMode === 'bottom') : shouldStickToBottom();
 		let lastDayKey = '';
 		if (!replace) {
 			const dividers = messagesEl.querySelectorAll('.wa-msg-date-divider');
@@ -5300,7 +6398,15 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 
 		messages.slice().sort((a, b) => a.id - b.id).forEach(msg => {
-			if (messagesEl.querySelector('[data-id="' + msg.id + '"]')) return;
+			const existing = messagesEl.querySelector('[data-id="' + msg.id + '"]');
+			if (existing) {
+				const previous = previousById[parseInt(msg.id, 10) || 0];
+				const changed = !!previous && messageContentFingerprint(previous) !== messageContentFingerprint(msg);
+				if (!changed && !opts.markEdited) return;
+				msg._edited = !!(msg._edited || opts.markEdited || changed || existing.querySelector('.wa-msg-edited'));
+				existing.replaceWith(renderMessage(msg));
+				return;
+			}
 			const msgDate = parseMessageDate(msg);
 			const dayKey = msgDate ? msgDate.toDateString() : '';
 			if (dayKey && dayKey !== lastDayKey) {
@@ -5309,23 +6415,192 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			}
 			messagesEl.appendChild(renderMessage(msg));
 		});
+		if (replace && openUnreadAnchorId) insertUnreadSeparator(openUnreadAnchorId);
 		trackMessageBounds(messages);
-		if (stickBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+		if (replace) {
+			scheduleOpenScrollKeep();
+		} else if (stickBottom) {
+			scrollMessagesToBottom();
+		}
 		bindLazyMedia(messagesEl);
+	}
+
+	function currentNewChatOffer() {
+		if (crmNewChatOffer && crmNewChatOffer.phone) return crmNewChatOffer;
+		const q = (searchQuery || '').trim();
+		const phone = buildWaPhoneDigits(q);
+		if (phone.length < 10) return null;
+		if (completedPhoneSearchKey !== normalizePhoneDigits(q)) return null;
+		return { phone: phone, source: 'search', entityType: '', entityId: 0 };
+	}
+
+	function loadWaLines() {
+		if (waLinesPromise) return waLinesPromise;
+		let url;
+		if (window.__WA_NOPROLOG) {
+			url = new URL(window.location.pathname, window.location.origin);
+			url.search = '';
+			url.searchParams.set('wa_lines', '1');
+			if (window.__WA_AID) url.searchParams.set('wa_aid', window.__WA_AID);
+		} else {
+			url = new URL('/local/custom_chat/ajax_wa_lines.php', window.location.origin);
+		}
+		waLinesPromise = fetch(url.toString(), { credentials: 'same-origin' })
+			.then(function (r) { return r.json(); })
+			.then(function (data) {
+				if (!data || !data.ok) throw new Error('Не удалось получить WhatsApp-линии');
+				return Array.isArray(data.lines) ? data.lines : [];
+			})
+			.catch(function (e) {
+				waLinesPromise = null;
+				throw e;
+			});
+		return waLinesPromise;
+	}
+
+	function chooseWaLine(lines) {
+		if (!lines.length) return Promise.resolve(null);
+		if (lines.length === 1) return Promise.resolve(lines[0]);
+		const text = lines.map(function (line, i) {
+			const number = line.number ? (' · +' + line.number) : '';
+			return (i + 1) + '. ' + line.name + number;
+		}).join('\n');
+		const raw = window.prompt('Выберите WhatsApp-линию:\n\n' + text, '1');
+		if (raw === null) return Promise.resolve(null);
+		const idx = parseInt(raw, 10) - 1;
+		return Promise.resolve(lines[idx] || null);
+	}
+
+	async function attachNewChatToCrm(chatId, offer) {
+		if (!offer || !offer.entityType || !offer.entityId) return;
+		let url;
+		if (window.__WA_NOPROLOG) {
+			url = new URL(window.location.pathname, window.location.origin);
+			url.search = '';
+			url.searchParams.set('wa_attach', '1');
+			if (window.__WA_AID) url.searchParams.set('wa_aid', window.__WA_AID);
+		} else {
+			url = new URL('/local/custom_chat/ajax_wa_attach.php', window.location.origin);
+		}
+		const body = new URLSearchParams();
+		body.set('chatId', String(chatId));
+		body.set('entityType', offer.entityType);
+		body.set('entityId', String(offer.entityId));
+		const response = await fetch(url.toString(), {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+			body: body.toString()
+		});
+		const data = await response.json();
+		if (!data || !data.ok) console.warn('WA CC: CRM attach', data);
+	}
+
+	async function createNewWaSession(phone, line) {
+		let url;
+		if (window.__WA_NOPROLOG) {
+			url = new URL(window.location.pathname, window.location.origin);
+			url.search = '';
+			url.searchParams.set('wa_start', '1');
+			if (window.__WA_AID) url.searchParams.set('wa_aid', window.__WA_AID);
+		} else {
+			url = new URL('/local/custom_chat/ajax_wa_start.php', window.location.origin);
+		}
+		const body = new URLSearchParams();
+		body.set('phone', phone);
+		body.set('lineId', String(line.id));
+		const response = await fetch(url.toString(), {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+			body: body.toString()
+		});
+		const data = await response.json();
+		if (!data || !data.ok) {
+			throw new Error((data && (data.message || data.error)) || 'Битрикс не создал чат');
+		}
+		return parseInt(data.chatId, 10) || 0;
+	}
+
+	async function startNewWaDialog(offer, button) {
+		if (!offer || !offer.phone) return;
+		if (button) button.disabled = true;
+		try {
+			const lines = await loadWaLines();
+			if (!lines.length) throw new Error('У вас нет подключённой WhatsApp-линии');
+			const line = await chooseWaLine(lines);
+			if (!line) return;
+
+			const phone = buildWaPhoneDigits(offer.phone);
+			const chatId = await createNewWaSession(phone, line);
+			if (!chatId) throw new Error('Битрикс не создал чат');
+
+			let target = null;
+			for (let i = 0; i < 8 && !target; i++) {
+				try { target = await chatItemFromDialogChatId(chatId); } catch (e) {}
+				if (!target) await new Promise(function (resolve) { setTimeout(resolve, 350); });
+			}
+			if (!target) throw new Error('Чат создан, но ещё не готов к открытию');
+			try {
+				await attachNewChatToCrm(chatId, offer);
+			} catch (e) {
+				console.warn('WA CC: не удалось привязать новый чат к CRM', e);
+			}
+
+			target._phones = [phone];
+			chatsCache = mergeChatLists(chatsCache, [target]);
+			crmNewChatOffer = null;
+			searchQuery = '';
+			searchEl.value = '';
+			renderChatList();
+			await openDialog(target, { keepPlacement: true });
+		} catch (e) {
+			const msg = e && (e.error_description || e.message || (e.ex && e.ex.error_description))
+				|| 'Не удалось начать диалог';
+			alert('Не удалось начать WhatsApp-диалог: ' + msg);
+		} finally {
+			if (button) button.disabled = false;
+		}
+	}
+
+	function renderNewChatOffer(offer) {
+		const phone = buildWaPhoneDigits(offer && offer.phone);
+		if (phone.length < 10) return;
+		const box = document.createElement('div');
+		box.className = 'wa-new-chat';
+		box.innerHTML =
+			'<div class="wa-new-chat-title">Чат с этим номером не найден</div>' +
+			'<div class="wa-new-chat-phone">' + BX.util.htmlspecialchars(formatPhoneDisplay(phone)) + '</div>' +
+			'<button type="button" class="wa-new-chat-btn">Начать новый диалог</button>';
+		const button = box.querySelector('.wa-new-chat-btn');
+		button.addEventListener('click', function () {
+			startNewWaDialog(offer, button);
+		});
+		listEl.appendChild(box);
 	}
 
 	function renderChatList() {
 		let items = applyListFilter(chatsCache.slice());
 		if (searchQuery.trim()) {
 			items = items.filter(c => matchesChatSearch(c, searchQuery));
+			const searchPhone = normalizePhoneDigits(searchQuery);
+			if (searchPhone.length >= 10) {
+				items = items.filter(isChatAllowedForPhoneSearch);
+				if (completedPhoneSearchKey !== searchPhone) items = [];
+			}
 		}
 		items = dedupeChatsByPhone(items);
 		updateTabUi();
 
 		listEl.innerHTML = '';
 		if (!items.length) {
-			listEl.innerHTML = '<div class="wa-chat-item" style="justify-content:center;color:#667781;padding:24px 14px;">' +
-				BX.util.htmlspecialchars(emptyListLabel()) + '</div>';
+			const offer = currentNewChatOffer();
+			if (offer && !searchRemoteLoading) {
+				renderNewChatOffer(offer);
+			} else {
+				listEl.innerHTML = '<div class="wa-chat-item" style="justify-content:center;color:#667781;padding:24px 14px;">' +
+					BX.util.htmlspecialchars(emptyListLabel()) + '</div>';
+			}
 			return;
 		}
 
@@ -5405,8 +6680,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			chatsCache = mergeChatLists(keep, list).map(chat => {
 				chat._phones = getChatPhones(chat);
 				if (isChatClosed(chat) && !isPinnedCrmChat(chat)) markChatClosed(chat);
-				return chat;
+				return applyLocalReadState(chat);
 			});
+			markCurrentChatReadLocally();
 			await enrichChatDisplayNames(chatsCache);
 			renderChatList();
 			if (currentDialogId) {
@@ -5422,12 +6698,181 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}
 	}
 
-	async function loadMessages(dialogId) {
+	function chatSearchMessageText(msg) {
+		return stripConnectorPrefix(messageRawText(msg))
+			.replace(/\[(?:\/)?[a-z][^\]]*\]/gi, ' ')
+			.replace(/<[^>]+>/g, ' ')
+			.replace(/&nbsp;|&#160;/gi, ' ')
+			.replace(/\s+/g, ' ')
+			.trim()
+			.toLocaleLowerCase('ru-RU');
+	}
+
+	function clearChatSearchHighlight() {
+		messagesEl.querySelectorAll('.wa-chat-search-hit').forEach(function (node) {
+			node.classList.remove('wa-chat-search-hit');
+		});
+	}
+
+	function updateChatSearchUi(scanning) {
+		const total = chatSearchResults.length;
+		if (scanning) {
+			chatSearchStatus.textContent = total ? ('Ищем… ' + total) : 'Ищем…';
+		} else if (total && chatSearchIndex >= 0) {
+			chatSearchStatus.textContent = (chatSearchIndex + 1) + ' из ' + total;
+		} else {
+			chatSearchStatus.textContent = chatSearchField.value.trim().length >= 2 ? 'Не найдено' : '';
+		}
+		chatSearchPrev.disabled = total < 2;
+		chatSearchNext.disabled = total < 2;
+	}
+
+	function rebuildChatSearchResults(query, keepMessageId) {
+		const needle = String(query || '').trim().toLocaleLowerCase('ru-RU');
+		chatSearchResults = Array.from(currentMessageCache.values()).filter(function (msg) {
+			return needle.length >= 2 && chatSearchMessageText(msg).indexOf(needle) !== -1;
+		}).sort(function (a, b) {
+			return (parseInt(b.id, 10) || 0) - (parseInt(a.id, 10) || 0);
+		});
+		chatSearchIndex = keepMessageId
+			? chatSearchResults.findIndex(function (msg) {
+				return (parseInt(msg.id, 10) || 0) === keepMessageId;
+			})
+			: (chatSearchResults.length ? 0 : -1);
+		if (chatSearchIndex < 0 && chatSearchResults.length) chatSearchIndex = 0;
+	}
+
+	async function focusChatSearchResult(index) {
+		if (!chatSearchResults.length) return;
+		chatSearchIndex = (index + chatSearchResults.length) % chatSearchResults.length;
+		const id = parseInt(chatSearchResults[chatSearchIndex].id, 10) || 0;
+		if (!id) return;
+		clearChatSearchHighlight();
+
+		let node = messagesEl.querySelector('.wa-msg[data-id="' + id + '"]');
+		if (!node && currentMessageCache.has(id)) {
+			const cachedRange = Array.from(currentMessageCache.values()).filter(function (msg) {
+				const messageId = parseInt(msg && msg.id, 10) || 0;
+				return messageId && messageId < firstMessageId && messageId >= id;
+			});
+			if (cachedRange.length) {
+				await prependMessages(cachedRange);
+				node = messagesEl.querySelector('.wa-msg[data-id="' + id + '"]');
+			}
+		}
+		while (!node && hasMoreHistory && currentDialogId) {
+			const before = firstMessageId;
+			await loadOlderMessages();
+			node = messagesEl.querySelector('.wa-msg[data-id="' + id + '"]');
+			if (firstMessageId === before) break;
+		}
+		if (node) {
+			node.classList.add('wa-chat-search-hit');
+			node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+		}
+		updateChatSearchUi(false);
+	}
+
+	async function runChatMessageSearch() {
+		clearTimeout(chatSearchTimer);
+		const query = chatSearchField.value.trim();
+		const token = ++chatSearchToken;
+		const dialogId = currentDialogId;
+		clearChatSearchHighlight();
+		if (!dialogId || query.length < 2) {
+			chatSearchResults = [];
+			chatSearchIndex = -1;
+			updateChatSearchUi(false);
+			return;
+		}
+
+		rebuildChatSearchResults(query, 0);
+		updateChatSearchUi(!chatSearchHistoryComplete);
+		if (chatSearchHistoryComplete) {
+			updateChatSearchUi(false);
+			if (chatSearchResults.length) focusChatSearchResult(0);
+			return;
+		}
+
+		let cursor = 0;
+		currentMessageCache.forEach(function (msg) {
+			const id = parseInt(msg && msg.id, 10) || 0;
+			if (id && (!cursor || id < cursor)) cursor = id;
+		});
+		cursor = cursor || firstMessageId;
+
+		try {
+			while (cursor && token === chatSearchToken && dialogId === currentDialogId) {
+				const data = await rest('im.dialog.messages.get', {
+					DIALOG_ID: dialogId,
+					LAST_ID: cursor,
+					LIMIT: MESSAGES_PAGE
+				});
+				if (token !== chatSearchToken || dialogId !== currentDialogId) return;
+				const messages = data.messages || [];
+				mergeUsers(data.users);
+				mergeFiles(data.files);
+				cacheCurrentMessages(messages);
+				const selectedId = chatSearchResults[chatSearchIndex]
+					? (parseInt(chatSearchResults[chatSearchIndex].id, 10) || 0)
+					: 0;
+				rebuildChatSearchResults(query, selectedId);
+				updateChatSearchUi(true);
+
+				let nextCursor = cursor;
+				messages.forEach(function (msg) {
+					const id = parseInt(msg && msg.id, 10) || 0;
+					if (id && id < nextCursor) nextCursor = id;
+				});
+				if (!messages.length || messages.length < MESSAGES_PAGE || nextCursor >= cursor) {
+					chatSearchHistoryComplete = true;
+					break;
+				}
+				cursor = nextCursor;
+				await new Promise(function (resolve) { setTimeout(resolve, 120); });
+			}
+			if (token !== chatSearchToken || dialogId !== currentDialogId) return;
+			chatSearchHistoryComplete = true;
+			const selectedId = chatSearchResults[chatSearchIndex]
+				? (parseInt(chatSearchResults[chatSearchIndex].id, 10) || 0)
+				: 0;
+			rebuildChatSearchResults(query, selectedId);
+			updateChatSearchUi(false);
+			if (chatSearchResults.length && chatSearchIndex >= 0) {
+				focusChatSearchResult(chatSearchIndex);
+			}
+		} catch (e) {
+			console.error('WA CC: поиск по сообщениям', e);
+			if (token === chatSearchToken) {
+				chatSearchStatus.textContent = 'Ошибка поиска';
+			}
+		}
+	}
+
+	function closeChatMessageSearch() {
+		chatSearchToken++;
+		clearTimeout(chatSearchTimer);
+		clearChatSearchHighlight();
+		chatSearchPanel.classList.remove('visible');
+		chatSearchToggle.classList.remove('active');
+		chatSearchField.value = '';
+		chatSearchResults = [];
+		chatSearchIndex = -1;
+		chatSearchStatus.textContent = '';
+	}
+
+	async function loadMessages(dialogId, opts) {
+		opts = opts || {};
+		currentMessageCache = new Map();
+		chatSearchHistoryComplete = false;
 		messagesEl.innerHTML = '<div class="wa-empty">Загрузка...</div>';
 		lastMessageId = 0;
 		firstMessageId = 0;
 		hasMoreHistory = true;
 		historyLoading = false;
+		openingScrollLock = true;
+		openScrollMode = 'bottom';
+		openUnreadAnchorId = 0;
 		filesMap = {};
 		usersMap = {};
 		seedCurrentUser();
@@ -5457,17 +6902,22 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			}
 			await ensureUsersLoaded(collectMessageAuthorIds(messages));
 			await prefetchFileUrls(collectFileIdsFromMessages(messages));
-			appendMessages(messages, true);
+			await appendMessages(messages, true, { unreadCount: opts.unreadCount || 0 });
 			hasMoreHistory = messages.length >= MESSAGES_PAGE;
+			chatSearchHistoryComplete = !hasMoreHistory;
+			markCurrentChatReadLocally();
+			renderChatList();
 			rest('im.dialog.read', { DIALOG_ID: dialogId }).catch(() => {});
 		} catch (e) {
 			console.error(e);
+			openingScrollLock = false;
 			messagesEl.innerHTML = '<div class="wa-empty">Не удалось загрузить сообщения</div>';
 		}
 	}
 
 	async function loadOlderMessages() {
 		if (!currentDialogId || historyLoading || !hasMoreHistory || !firstMessageId) return;
+		if (openingScrollLock) return;
 		historyLoading = true;
 		setHistoryLoader(true);
 		try {
@@ -5482,14 +6932,16 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			hydrateFilesFromMessages(messages);
 			if (!messages.length) {
 				hasMoreHistory = false;
+				chatSearchHistoryComplete = true;
 				return;
 			}
 			await ensureUsersLoaded(collectMessageAuthorIds(messages));
 			await prefetchFileUrls(collectFileIdsFromMessages(messages));
 			const beforeFirst = firstMessageId;
-			prependMessages(messages);
+			await prependMessages(messages);
 			if (firstMessageId >= beforeFirst || messages.length < MESSAGES_PAGE) {
 				hasMoreHistory = false;
+				chatSearchHistoryComplete = true;
 			}
 		} catch (e) {
 			console.error(e);
@@ -5504,6 +6956,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const dialogId = resolveDialogId(chatData);
 		if (!dialogId) return;
 
+		closeChatMessageSearch();
 		if (recording) await cancelRecording();
 		clearReplyTo();
 
@@ -5526,6 +6979,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		waChatTickStatus = '';
 		waChatTickTs = 0;
 		waChatReadTs = 0;
+		const unreadCount = parseInt(chatData.counter || 0, 10) || (chatData.unread ? 1 : 0);
+		markCurrentChatReadLocally();
+		publishOpenChatToPortal();
 		await applyCrmBindings(chatData, null);
 
 		const av = getAvatarData(chatData);
@@ -5541,7 +6997,8 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		} catch (e) { /* ignore */ }
 		inputEl.focus();
 		renderChatList();
-		await loadMessages(dialogId);
+		await loadMessages(dialogId, { unreadCount: unreadCount });
+		publishOpenChatToPortal();
 		await refreshSessionState();
 		refreshReadReceipts({ force: true }).catch(function () {});
 		startChatPolling();
@@ -6177,6 +7634,21 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	if (replyCancel) replyCancel.addEventListener('click', clearReplyTo);
 	if (fwdCloseBtn) fwdCloseBtn.addEventListener('click', closeForwardPicker);
 	if (fwdGoBtn) fwdGoBtn.addEventListener('click', confirmForward);
+	if (bulkBarCancelBtn) bulkBarCancelBtn.addEventListener('click', clearSelectedMessages);
+	if (bulkBarDownloadBtn) {
+		bulkBarDownloadBtn.addEventListener('click', function () {
+			downloadSelectedFiles().catch(function (e) {
+				alert('Не удалось скачать файлы: ' + (e && (e.ex && e.ex.error_description || e.error_description || e.message) || e));
+			});
+		});
+	}
+	if (bulkBarForwardBtn) {
+		bulkBarForwardBtn.addEventListener('click', function () {
+			const msgs = getSelectedMessages();
+			if (!msgs.length) return;
+			openForwardPicker(msgs);
+		});
+	}
 	if (fwdEl) {
 		fwdEl.addEventListener('click', function (e) {
 			if (e.target === fwdEl) closeForwardPicker();
@@ -6248,14 +7720,38 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		hydrateFilesFromMessages(messages);
 		await ensureUsersLoaded(collectMessageAuthorIds(messages));
 		await prefetchFileUrls(collectFileIdsFromMessages(messages));
-		appendMessages(messages, false);
+		await appendMessages(messages, false);
+	}
+
+	let recentEditSyncBusy = false;
+	async function refreshRecentMessagesForEdits() {
+		if (!currentDialogId || recentEditSyncBusy) return;
+		recentEditSyncBusy = true;
+		const dialogId = currentDialogId;
+		try {
+			const data = await rest('im.dialog.messages.get', {
+				DIALOG_ID: dialogId,
+				LIMIT: 20
+			});
+			if (dialogId !== currentDialogId) return;
+			const messages = data.messages || [];
+			mergeUsers(data.users);
+			mergeFiles(data.files);
+			hydrateFilesFromMessages(messages);
+			await ensureUsersLoaded(collectMessageAuthorIds(messages));
+			await prefetchFileUrls(collectFileIdsFromMessages(messages));
+			await appendMessages(messages, false, { checkUpdates: true });
+		} finally {
+			recentEditSyncBusy = false;
+		}
 	}
 
 	function updateSendButton() {
 		const hasText = !!(inputEl.value || '').trim();
-		if (hasText) {
+		const hasPendingFiles = pendingUploadFiles.length > 0;
+		if (hasText || hasPendingFiles) {
 			sendBtn.classList.remove('mic');
-			sendBtn.title = 'Отправить';
+			sendBtn.title = hasPendingFiles ? 'Отправить вложения' : 'Отправить';
 			icoMic.style.display = 'none';
 			icoSend.style.display = 'block';
 		} else {
@@ -6273,15 +7769,47 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		sendBtn.disabled = true;
 		try {
 			await ensureCanSend();
-			const payload = { DIALOG_ID: currentDialogId, MESSAGE: text };
-			if (replyTo && replyTo.id) payload.REPLY_ID = replyTo.id;
-			await rest('im.message.add', payload);
+			let quotedOk = false;
+			let quotedRes = null;
+			const heldReply = replyTo && replyTo.id ? {
+				id: replyTo.id,
+				author: replyTo.author || '',
+				text: replyTo.text || '',
+				fileIds: replyTo.fileIds || [],
+				mediaKind: replyTo.mediaKind || ''
+			} : null;
+			if (heldReply) {
+				try {
+					quotedRes = await sendQuotedViaGreen({ text: text });
+					quotedOk = !!(quotedRes && quotedRes.ok);
+					if (quotedOk && quotedRes.reply && quotedRes.reply.text) {
+						heldReply.text = quotedRes.reply.text;
+					}
+				} catch (e) {
+					console.warn('wa_quote_send failed, fallback IM', e);
+				}
+			}
+			if (!quotedOk) {
+				const payload = { DIALOG_ID: currentDialogId, MESSAGE: text };
+				if (heldReply) payload.REPLY_ID = heldReply.id;
+				await rest('im.message.add', payload);
+			}
 			inputEl.value = '';
 			clearReplyTo();
 			inputEl.style.height = 'auto';
 			updateSendButton();
 			markLocalOutgoingPending();
 			await refreshTail();
+			if (quotedOk && heldReply) {
+				applyPendingQuote(heldReply, quotedRes && quotedRes.imMessageId);
+			}
+			if (quotedOk) {
+				setTimeout(function () {
+					refreshTail().then(function () {
+						if (heldReply) applyPendingQuote(heldReply, quotedRes && quotedRes.imMessageId);
+					}).catch(function () {});
+				}, 900);
+			}
 			loadChatList();
 			refreshReadReceipts().catch(function () {});
 		} catch (e) {
@@ -6306,13 +7834,37 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		});
 	}
 
+	function buildUniqueFileName(name) {
+		name = String(name || '').trim() || 'file';
+		const dot = name.lastIndexOf('.');
+		const base = dot > 0 ? name.slice(0, dot) : name;
+		const ext = dot > 0 ? name.slice(dot) : '';
+		const stamp = new Date().toISOString().replace(/[^\d]/g, '').slice(0, 14);
+		const rnd = Math.random().toString(36).slice(2, 7);
+		return base + '_' + stamp + '_' + rnd + ext;
+	}
+
+	function ensureUploadFileName(file) {
+		if (!file) return file;
+		const original = String(file.name || '');
+		if (!original) return file;
+		try {
+			return new File([file], buildUniqueFileName(original), {
+				type: file.type || 'application/octet-stream',
+				lastModified: file.lastModified || Date.now()
+			});
+		} catch (e) {
+			return file;
+		}
+	}
+
 	function getUploadDialogId() {
 		if (currentDialogId && /^chat\d+/i.test(currentDialogId)) return currentDialogId;
 		if (currentChatId) return 'chat' + currentChatId;
 		return currentDialogId;
 	}
 
-	async function uploadViaDiskCommit(file, caption, notifyClient, targetChat) {
+	async function uploadViaDiskCommit(file, caption, notifyClient, targetChat, silentConnector) {
 		const chatId = parseInt(
 			(targetChat && (targetChat.chat_id || (targetChat.chat && targetChat.chat.id))) || currentChatId,
 			10
@@ -6350,17 +7902,47 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (notifyClient === false) {
 			commitParams.SILENT_MODE = 'N';
 		}
+		// Файл уже ушёл в WhatsApp через Green API — в чат кладём копию молча.
+		if (silentConnector) {
+			commitParams.SILENT_MODE = 'Y';
+		}
 
-		return await rest('im.disk.file.commit', commitParams);
+		return {
+			fileId: parseFileId(fileId),
+			result: await rest('im.disk.file.commit', commitParams)
+		};
+	}
+
+	async function echoFilesLocally(files, caption, replyId) {
+		const arr = Array.from(files || []);
+		for (let i = 0; i < arr.length; i++) {
+			const file = arr[i];
+			if (!file) continue;
+			try {
+				const committed = await uploadViaDiskCommit(
+					ensureUploadFileName(file),
+					(i === 0 && caption) ? caption : '',
+					true,
+					null,
+					true
+				);
+				if (replyId && committed && committed.fileId) {
+					await linkCommittedFileReply(committed.fileId, replyId);
+				}
+			} catch (e) {
+				console.warn('local file echo failed', e);
+			}
+		}
 	}
 
 	async function uploadFileToChat(file, caption) {
-		return await uploadViaDiskCommit(file, caption || '', true);
+		return await uploadViaDiskCommit(ensureUploadFileName(file), caption || '', true);
 	}
 
 	async function uploadVoiceViaV2(file) {
 		const dialogId = getUploadDialogId();
 		if (!dialogId) throw new Error('DIALOG_ID не определён');
+		file = ensureUploadFileName(file);
 		const content = await fileToBase64(file);
 		return await rest('im.v2.File.upload', {
 			dialogId: dialogId,
@@ -6396,9 +7978,27 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				uploadHint.textContent = msg;
 			});
 			uploadHint.textContent = 'Отправка голосового (' + waFile.name + ')...';
-			await uploadVoiceToClient(waFile);
+			let quotedOk = false;
+			if (replyTo && replyTo.id) {
+				try {
+					const q = await sendQuotedViaGreen({ files: [waFile], ptt: true });
+					quotedOk = !!(q && q.ok);
+				} catch (e) {
+					console.warn('wa_quote_send voice failed, fallback IM', e);
+				}
+			}
+			if (!quotedOk) {
+				await uploadVoiceToClient(waFile);
+			} else {
+				await echoFilesLocally([waFile], '', replyTo && replyTo.id);
+				clearReplyTo();
+			}
 			markLocalOutgoingPending();
 			await loadMessages(currentDialogId);
+			if (quotedOk) {
+				setTimeout(function () { refreshTail().catch(function () {}); }, 900);
+				setTimeout(function () { refreshTail().catch(function () {}); }, 2200);
+			}
 			loadChatList();
 			refreshReadReceipts().catch(function () {});
 		} catch (e) {
@@ -6422,16 +8022,35 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const caption = (inputEl.value || '').trim();
 		try {
 			await ensureCanSend();
-			for (let i = 0; i < fileList.length; i++) {
-				const file = fileList[i];
-				uploadHint.textContent = 'Загрузка: ' + file.name + ' (' + (i + 1) + '/' + fileList.length + ')...';
-				await uploadFileToChat(file, (i === 0 && caption) ? caption : '');
+			const fileArr = Array.from(fileList);
+			let quotedOk = false;
+			if (replyTo && replyTo.id) {
+				try {
+					const q = await sendQuotedViaGreen({ text: caption, files: fileArr });
+					quotedOk = !!(q && q.ok);
+				} catch (e) {
+					console.warn('wa_quote_send files failed, fallback IM', e);
+				}
+			}
+			if (!quotedOk) {
+				for (let i = 0; i < fileArr.length; i++) {
+					const file = fileArr[i];
+					uploadHint.textContent = 'Загрузка: ' + file.name + ' (' + (i + 1) + '/' + fileArr.length + ')...';
+					await uploadFileToChat(file, (i === 0 && caption) ? caption : '');
+				}
+			} else {
+				await echoFilesLocally(fileArr, caption, replyTo && replyTo.id);
+				clearReplyTo();
 			}
 			inputEl.value = '';
 			inputEl.style.height = 'auto';
 			updateSendButton();
 			markLocalOutgoingPending();
 			await loadMessages(currentDialogId);
+			if (quotedOk) {
+				setTimeout(function () { refreshTail().catch(function () {}); }, 900);
+				setTimeout(function () { refreshTail().catch(function () {}); }, 2200);
+			}
 			loadChatList();
 			refreshReadReceipts().catch(function () {});
 		} catch (e) {
@@ -6445,6 +8064,96 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 			fileInput.value = '';
 			inputEl.focus();
 		}
+	}
+
+	function revokePendingUploadUrls() {
+		pendingUploadFiles.forEach(function (item) {
+			if (item && item.previewUrl) {
+				try { URL.revokeObjectURL(item.previewUrl); } catch (e) { /* ignore */ }
+			}
+		});
+	}
+
+	function clearPendingUploads() {
+		revokePendingUploadUrls();
+		pendingUploadFiles = [];
+		if (attachPreviewEl) {
+			attachPreviewEl.innerHTML = '';
+			attachPreviewEl.classList.remove('visible');
+		}
+		if (fileInput) {
+			fileInput.value = '';
+		}
+		updateSendButton();
+	}
+
+	function renderPendingUploads() {
+		if (!attachPreviewEl) return;
+		attachPreviewEl.innerHTML = '';
+		if (!pendingUploadFiles.length) {
+			attachPreviewEl.classList.remove('visible');
+			updateSendButton();
+			return;
+		}
+
+		pendingUploadFiles.forEach(function (item, index) {
+			const card = document.createElement('div');
+			card.className = 'wa-attach-card';
+
+			const removeBtn = document.createElement('button');
+			removeBtn.type = 'button';
+			removeBtn.className = 'wa-attach-remove';
+			removeBtn.textContent = '×';
+			removeBtn.addEventListener('click', function () {
+				if (item.previewUrl) {
+					try { URL.revokeObjectURL(item.previewUrl); } catch (e) { /* ignore */ }
+				}
+				pendingUploadFiles.splice(index, 1);
+				renderPendingUploads();
+			});
+
+			const thumb = document.createElement('div');
+			thumb.className = 'wa-attach-thumb';
+			if (item.file && /^image\//i.test(item.file.type) && item.previewUrl) {
+				const img = document.createElement('img');
+				img.src = item.previewUrl;
+				img.alt = item.file.name || 'image';
+				thumb.appendChild(img);
+			} else {
+				thumb.textContent = item.file && item.file.type ? item.file.type.split('/')[0].toUpperCase() : 'FILE';
+			}
+
+			const name = document.createElement('div');
+			name.className = 'wa-attach-name';
+			name.textContent = item.file && item.file.name ? item.file.name : 'Файл';
+
+			card.appendChild(removeBtn);
+			card.appendChild(thumb);
+			card.appendChild(name);
+			attachPreviewEl.appendChild(card);
+		});
+
+		attachPreviewEl.classList.add('visible');
+		updateSendButton();
+	}
+
+	function stageFilesForUpload(fileList) {
+		if (!currentDialogId || !fileList || !fileList.length || sending) return;
+		Array.from(fileList).forEach(function (file) {
+			if (!file || file.size <= 0) return;
+			pendingUploadFiles.push({
+				file: file,
+				previewUrl: /^image\//i.test(file.type || '') ? URL.createObjectURL(file) : ''
+			});
+		});
+		renderPendingUploads();
+	}
+
+	async function sendPendingUploads() {
+		if (!pendingUploadFiles.length || sending) return;
+		const files = pendingUploadFiles.map(function (item) { return item.file; });
+		clearPendingUploads();
+		await uploadFiles(files);
 	}
 
 	function formatRecTime(ms) {
@@ -6486,10 +8195,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	function waFfmpegAsset(name) {
-		const url = new URL(window.location.href);
-		url.search = 'wa_ffmpeg=' + encodeURIComponent(name);
-		url.hash = '';
-		return url.toString();
+		return window.location.origin + '/local/custom_chat/ajax_ffmpeg.php?wa_ffmpeg=' + encodeURIComponent(name);
 	}
 
 	let ffmpegInstance = null;
@@ -6685,15 +8391,22 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	}
 
 	sendBtn.addEventListener('click', () => {
-		if ((inputEl.value || '').trim()) sendMessage();
-		else startRecording();
+		if (pendingUploadFiles.length) {
+			sendPendingUploads().catch(function (e) {
+				console.error(e);
+			});
+		} else if ((inputEl.value || '').trim()) {
+			sendMessage();
+		} else {
+			startRecording();
+		}
 	});
 	recCancel.addEventListener('click', () => cancelRecording());
 	recSend.addEventListener('click', () => finishRecording(true));
 
 	attachBtn.addEventListener('click', () => fileInput.click());
 	fileInput.addEventListener('change', () => {
-		if (fileInput.files && fileInput.files.length) uploadFiles(Array.from(fileInput.files));
+		if (fileInput.files && fileInput.files.length) stageFilesForUpload(Array.from(fileInput.files));
 	});
 
 	inputEl.addEventListener('keydown', e => {
@@ -6710,6 +8423,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	searchEl.addEventListener('input', function () {
 		searchQuery = searchEl.value || '';
+		crmNewChatOffer = null;
+		completedPhoneSearchKey = '';
+		waAllowedLineIds = null;
 		if (searchQuery.trim()) {
 			chatsCache.forEach(function (chat) {
 				chat._phones = getChatPhones(chat);
@@ -6726,6 +8442,38 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		}, 450);
 	});
 
+	chatSearchToggle.addEventListener('click', function () {
+		if (!currentDialogId) return;
+		const opening = !chatSearchPanel.classList.contains('visible');
+		chatSearchPanel.classList.toggle('visible', opening);
+		chatSearchToggle.classList.toggle('active', opening);
+		if (opening) {
+			chatSearchField.focus();
+			chatSearchField.select();
+		} else {
+			closeChatMessageSearch();
+		}
+	});
+	chatSearchClose.addEventListener('click', closeChatMessageSearch);
+	chatSearchField.addEventListener('input', function () {
+		clearTimeout(chatSearchTimer);
+		chatSearchTimer = setTimeout(runChatMessageSearch, 400);
+	});
+	chatSearchField.addEventListener('keydown', function (e) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			runChatMessageSearch();
+		} else if (e.key === 'Escape') {
+			closeChatMessageSearch();
+		}
+	});
+	chatSearchPrev.addEventListener('click', function () {
+		focusChatSearchResult(chatSearchIndex - 1);
+	});
+	chatSearchNext.addEventListener('click', function () {
+		focusChatSearchResult(chatSearchIndex + 1);
+	});
+
 	tabsEl.addEventListener('click', e => {
 		const btn = e.target.closest('.wa-tab');
 		if (!btn || !btn.dataset.filter) return;
@@ -6734,16 +8482,56 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 	});
 
 	messagesEl.addEventListener('scroll', function () {
+		if (openingScrollLock || historyLoading) return;
 		if (messagesEl.scrollTop < 100) loadOlderMessages();
 	});
+	if (typeof ResizeObserver !== 'undefined') {
+		try {
+			const ro = new ResizeObserver(function () {
+				if (openingScrollLock) applyOpenScroll();
+				else if (openScrollMode === 'bottom' && shouldStickToBottom()) scrollMessagesToBottom();
+			});
+			ro.observe(messagesEl);
+		} catch (e) { /* ignore */ }
+	}
 
 	messagesEl.addEventListener('dragover', e => e.preventDefault());
 	messagesEl.addEventListener('drop', e => {
 		e.preventDefault();
 		if (!currentDialogId) return;
 		const files = Array.from(e.dataTransfer.files || []);
-		if (files.length) uploadFiles(files);
+		if (files.length) stageFilesForUpload(files);
 	});
+
+	function getClipboardFiles(evt) {
+		const dt = evt && evt.clipboardData;
+		if (!dt) return [];
+		const files = Array.from(dt.files || []);
+		if (files.length) {
+			return files.filter(function (file) {
+				return file && file.size > 0;
+			});
+		}
+
+		const out = [];
+		Array.from(dt.items || []).forEach(function (item) {
+			if (!item || item.kind !== 'file') return;
+			const file = item.getAsFile ? item.getAsFile() : null;
+			if (file && file.size > 0) out.push(file);
+		});
+		return out;
+	}
+
+	function handlePasteFiles(e) {
+		if (!currentDialogId || sending) return;
+		const files = getClipboardFiles(e);
+		if (!files.length) return;
+		e.preventDefault();
+		stageFilesForUpload(files);
+	}
+
+	inputEl.addEventListener('paste', handlePasteFiles);
+	messagesEl.addEventListener('paste', handlePasteFiles);
 
 	if (BX.PULL) {
 		const pullType = (BX.PullClient && BX.PullClient.SubscriptionType)
@@ -6752,7 +8540,11 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		const pullReadCommands = ['readMessage', 'readMessageChat', 'readMessageOpponent', 'readMessageOpponentChat'];
 
 		pullCommands.forEach(function (command) {
-			const sub = { moduleId: 'im', command: command, callback: handlePullMessage };
+			const sub = {
+				moduleId: 'im',
+				command: command,
+				callback: function (params) { handlePullMessage(params, command); }
+			};
 			if (pullType) sub.type = pullType;
 			BX.PULL.subscribe(sub);
 		});
@@ -6771,7 +8563,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				if (pullCommands.indexOf(cmd) !== -1) handlePullMessage(params);
 				if (pullReadCommands.indexOf(cmd) !== -1) handlePullRead(params);
 				if (cmd === 'recentChange' || cmd === 'chatUpdate') {
-					loadChatList();
+					scheduleLoadChatList();
 					if (currentChatId) refreshSessionState();
 				}
 			}
@@ -6786,7 +8578,7 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 				const cmd = data.command || '';
 				if (cmd.indexOf('message') !== -1 || cmd === 'sessionStart' || cmd === 'sessionFinish') {
 					if (currentDialogId) refreshTail().catch(function () {});
-					loadChatList();
+					scheduleLoadChatList();
 					if (currentChatId) refreshSessionState();
 				}
 			}
@@ -6795,20 +8587,27 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 
 	let chatPollTimer = null;
 	let ticksPollTimer = null;
+	let editPollTick = 0;
 	function startChatPolling() {
 		if (chatPollTimer) clearInterval(chatPollTimer);
 		if (ticksPollTimer) clearInterval(ticksPollTimer);
 		chatPollTimer = setInterval(function () {
+			if (document.hidden) return;
 			if (currentDialogId && !sending && !recording) {
 				refreshTail().catch(function () {});
+				editPollTick++;
+				if (editPollTick >= 6) {
+					editPollTick = 0;
+					refreshRecentMessagesForEdits().catch(function () {});
+				}
 			}
-		}, 4000);
-		/* галочки отдельно и чаще — иначе отстаём от WhatsApp */
+		}, 10000);
 		ticksPollTimer = setInterval(function () {
+			if (document.hidden) return;
 			if (currentDialogId && !sending && !recording) {
-				refreshReadReceipts({ force: true }).catch(function () {});
+				refreshReadReceipts().catch(function () {});
 			}
-		}, 2500);
+		}, 8000);
 	}
 
 	updateSendButton();
@@ -6826,7 +8625,9 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		} catch (e) { /* ignore */ }
 	})().finally(function () {
 		loadChatList();
-		setInterval(loadChatList, 30000);
+		setInterval(function () {
+			if (!document.hidden) loadChatList();
+		}, 60000);
 	});
 
 	async function fetchCrmPhonesForEntity(entityType, entityId) {
@@ -6956,35 +8757,40 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		return out;
 	}
 
-	async function findChatsByPhonesAnyLine(phoneList, chatIds) {
+	async function findChatsByPhonesAnyLine(phoneList, chatIds, options) {
 		const phones = (phoneList || []).map(buildWaPhoneDigits).filter(function (p) {
 			return p.length >= 10;
 		});
 		if (!phones.length) return;
+		options = options || {};
 
 		// 1) CRM duplicate → чаты контакта/лида/компании (в т.ч. другие сделки)
-		for (let i = 0; i < phones.length && i < 4; i++) {
-			try {
-				const dup = await rest('crm.duplicate.findbycomm', {
-					type: 'PHONE',
-					values: buildPhoneLookupValues(phones[i])
-				});
-				const dupData = dup.result || dup || {};
-				const types = ['CONTACT', 'LEAD', 'COMPANY', 'DEAL'];
-				for (let t = 0; t < types.length; t++) {
-					const ids = dupData[types[t]] || [];
-					for (let j = 0; j < ids.length && j < 8; j++) {
-						await collectChatIdsForCrmEntity(types[t], ids[j], chatIds);
-						if (String(types[t]).toLowerCase() === 'deal' || types[t] === 'DEAL') {
-							await fetchChatIdsFromCrmActivities('deal', ids[j], chatIds);
-						}
-						if (types[t] === 'LEAD' || types[t] === 'lead') {
-							await fetchChatIdsFromCrmActivities('lead', ids[j], chatIds);
+		if (!options.skipCrm) {
+			for (let i = 0; i < phones.length && i < 4; i++) {
+				try {
+					const dup = await rest('crm.duplicate.findbycomm', {
+						type: 'PHONE',
+						values: buildPhoneLookupValues(phones[i])
+					});
+					const dupData = dup.result || dup || {};
+					const types = ['CONTACT', 'LEAD', 'COMPANY', 'DEAL'];
+					for (let t = 0; t < types.length; t++) {
+						const ids = dupData[types[t]] || [];
+						for (let j = 0; j < ids.length && j < 8; j++) {
+							if (!options.skipRestrictedCrmMethods) {
+								await collectChatIdsForCrmEntity(types[t], ids[j], chatIds);
+							}
+							if (String(types[t]).toLowerCase() === 'deal' || types[t] === 'DEAL') {
+								await fetchChatIdsFromCrmActivities('deal', ids[j], chatIds);
+							}
+							if (types[t] === 'LEAD' || types[t] === 'lead') {
+								await fetchChatIdsFromCrmActivities('lead', ids[j], chatIds);
+							}
 						}
 					}
+				} catch (e) {
+					console.warn('deal deeplink duplicate', e);
 				}
-			} catch (e) {
-				console.warn('deal deeplink duplicate', e);
 			}
 		}
 
@@ -7492,9 +9298,29 @@ body.wa-cc-desktop.wa-chat-open .wa-sidebar { display: flex !important; }
 		if (dealIdParam || leadIdParam) {
 			const label = dealIdParam ? ('сделке #' + dealIdParam) : ('лиду #' + leadIdParam);
 			console.warn('WA CC: чат не найден по ' + label);
+			try {
+				const entityType = dealIdParam ? 'deal' : 'lead';
+				const entityId = parseInt(dealIdParam || leadIdParam, 10) || 0;
+				const meta = await fetchCrmPhonesForEntity(entityType, entityId);
+				const phone = meta && meta.phones && meta.phones[0];
+				if (phone) {
+					crmNewChatOffer = {
+						phone: phone,
+						source: 'crm',
+						entityType: entityType,
+						entityId: entityId
+					};
+					searchQuery = phone;
+					searchEl.value = formatPhoneDisplay(phone);
+					renderChatList();
+					return;
+				}
+			} catch (e) {
+				console.warn('WA CC: телефон CRM для нового чата', e);
+			}
 			if (typeof BX !== 'undefined' && BX.UI && BX.UI.Notification) {
 				BX.UI.Notification.Center.notify({
-					content: 'WhatsApp-чат не найден по ' + label,
+					content: 'В ' + label + ' нет телефона для WhatsApp',
 					autoHideDelay: 5000
 				});
 			}

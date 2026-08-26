@@ -116,29 +116,29 @@ if (!function_exists('waDealUfLock_onBeforeUpdate')) {
 if (!function_exists('waDealUfLock_onBeforeUpdateOrm')) {
 	function waDealUfLock_onBeforeUpdateOrm(\Bitrix\Main\Event $event)
 	{
+		$result = new \Bitrix\Main\ORM\EventResult();
 		if (waDealUfLock_isPortalAdmin() || waDealUfLock_isAutomationContext()) {
-			return;
+			return $result;
 		}
 		$parameters = $event->getParameters();
 		if (!isset($parameters['fields']) || !is_array($parameters['fields'])) {
-			return;
+			return $result;
 		}
 		$fields = $parameters['fields'];
+		$before = $fields;
 		if (!waDealUfLock_stripFields($fields)) {
-			return;
+			return $result;
 		}
-		$parameters['fields'] = $fields;
-		/* Event parameters are by ref in some versions — set back if possible */
-		try {
-			$ref = new \ReflectionClass($event);
-			if ($ref->hasProperty('parameters')) {
-				$prop = $ref->getProperty('parameters');
-				$prop->setAccessible(true);
-				$prop->setValue($event, $parameters);
+		$unset = [];
+		foreach ($before as $name => $_) {
+			if (!array_key_exists($name, $fields)) {
+				$unset[] = $name;
 			}
-		} catch (\Throwable $e) {
-			// ignore — legacy hook covers CCrmDeal::Update
 		}
+		if ($unset) {
+			$result->unsetFields($unset);
+		}
+		return $result;
 	}
 }
 
@@ -193,8 +193,10 @@ if (!function_exists('waDealUfLock_injectAssets')) {
 
 $em = \Bitrix\Main\EventManager::getInstance();
 $em->addEventHandler('crm', 'OnBeforeCrmDealUpdate', 'waDealUfLock_onBeforeUpdate');
+$em->addEventHandler('crm', 'OnBeforeCrmDealAdd', 'waDealUfLock_onBeforeUpdate');
 try {
 	$em->addEventHandler('crm', '\Bitrix\Crm\DealTable::OnBeforeUpdate', 'waDealUfLock_onBeforeUpdateOrm');
+	$em->addEventHandler('crm', '\Bitrix\Crm\DealTable::OnBeforeAdd', 'waDealUfLock_onBeforeUpdateOrm');
 } catch (\Throwable $e) {
 	// ignore
 }
